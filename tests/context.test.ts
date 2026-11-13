@@ -36,7 +36,9 @@ function makeInput(budget = 60000, repeat = 20): BuildContextInput {
       status: 'pending',
       createdAt: 1,
       appliedChapter: null,
-      expiresChapter: null
+      expiresChapter: null,
+      startsChapter: null,
+      origin: 'user'
     }
   ]
   const priorChapters: ContextChapter[] = Array.from({ length: 8 }, (_, index) => ({
@@ -123,5 +125,15 @@ describe('buildWritingContext', () => {
     const result = buildWritingContext(makeInput(4000, 100))
     expect(result.layers.outline).toBeGreaterThan(0)
     expect(result.user).toContain('北站')
+  })
+
+  it('carries a paragraph seed into the prompt without repeating it', () => {
+    const seed = `雨停在窗前，她把信折好。${'她没有开灯。'.repeat(30)}`
+    const result = buildWritingContext({ ...makeInput(), seedText: seed })
+    expect(result.user).toContain('本章已写好的开头')
+    expect(result.user).toContain('雨停在窗前')
+    expect(result.user).toContain('不得重复')
+    expect(result.layers.seed).toBeGreaterThan(0)
+    expect(result.user.match(/雨停在窗前/gu)).toHaveLength(1)
   })
 })

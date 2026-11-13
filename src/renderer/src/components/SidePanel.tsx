@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, Trash2, X } from 'lucide-react'
 import { iconStroke } from '@shared/tokens'
 import { DIRECTIVE_SCOPES, STATUS_LABEL } from '@shared/constants'
@@ -11,6 +11,9 @@ import type {
 import { useApp } from '../store'
 import { errorText, formatTime, unwrap } from '../lib'
 import { OutlineDialog } from './OutlineDialog'
+import { PlotPanel } from './PlotPanel'
+import { QaPanel } from './QaPanel'
+import { InsightsPanel } from './InsightsPanel'
 import { VersionDialog } from './VersionDialog'
 import { BusyLine, Dialog } from './ui'
 
@@ -89,6 +92,15 @@ export function SidePanel(): React.JSX.Element {
   const chapterVersion = chapter?.version
   const locked = chapter?.status === 'generating' || chapter?.status === 'queued'
 
+  // Async responses belong to the chapter that started them. If the reader
+  // turns the page mid-request, the result must not land on the new chapter.
+  const chapterIdRef = useRef(chapterId)
+  chapterIdRef.current = chapterId
+  const beatsSeq = useRef(0)
+  const selectSeq = useRef(0)
+  const previewSeq = useRef(0)
+  const fixSeq = useRef(0)
+
   useEffect(() => {
     setBeats([])
     setTargets(null)
@@ -96,6 +108,10 @@ export function SidePanel(): React.JSX.Element {
     setGlobalNote('')
     setInstruction('')
     setFixBusy('')
+    setBeatsBusy(false)
+    setSelectBusy(false)
+    setPreviewBusy(false)
+    setDirectiveBusy(false)
     setVersionId(null)
     setOutlineOpen(false)
     setDeleteOpen(false)
@@ -164,16 +180,21 @@ export function SidePanel(): React.JSX.Element {
 
   const makeBeats = async (): Promise<void> => {
     if (!chapter) return
+    const targetId = chapter.id
+    const seq = (beatsSeq.current += 1)
     setBeatsBusy(true)
     try {
       const result = await unwrap(
         window.shiye.createBeats(reader.project.id, chapter.idx)
       )
+      if (chapterIdRef.current !== targetId || seq !== beatsSeq.current) return
       setBeats(result.beats)
     } catch (error) {
-      showToast('error', errorText(error))
+      if (chapterIdRef.current === targetId && seq === beatsSeq.current) {
+        showToast('error', errorText(error))
+      }
     } finally {
-      setBeatsBusy(false)
+      if (seq === beatsSeq.current) setBeatsBusy(false)
     }
   }
 
@@ -183,18 +204,23 @@ export function SidePanel(): React.JSX.Element {
       showToast('error', '先写一句想怎么改。')
       return
     }
+    const targetId = chapter.id
+    const seq = (selectSeq.current += 1)
     setSelectBusy(true)
     try {
       const result = await unwrap(
         window.shiye.selectTargets(chapter.id, instruction.trim())
       )
+      if (chapterIdRef.current !== targetId || seq !== selectSeq.current) return
       setTargets(result.targets)
       setGlobalNote(result.globalNote)
       setSelectedTargets(new Set(result.targets.map((target) => target.chunkId)))
     } catch (error) {
-      showToast('error', errorText(error))
+      if (chapterIdRef.current === targetId && seq === selectSeq.current) {
+        showToast('error', errorText(error))
+      }
     } finally {
-      setSelectBusy(false)
+      if (seq === selectSeq.current) setSelectBusy(false)
     }
   }
 
@@ -204,6 +230,8 @@ export function SidePanel(): React.JSX.Element {
       showToast('error', '先写一句想怎么改。')
       return
     }
+    const targetId = chapter.id
+    const seq = (previewSeq.current += 1)
     setPreviewBusy(true)
     try {
       const ids =
@@ -215,26 +243,34 @@ export function SidePanel(): React.JSX.Element {
       const preview = await unwrap(
         window.shiye.previewRewrite(chapter.id, instruction.trim(), ids)
       )
+      if (chapterIdRef.current !== targetId || seq !== previewSeq.current) return
       setDiff(preview)
     } catch (error) {
-      showToast('error', errorText(error))
+      if (chapterIdRef.current === targetId && seq === previewSeq.current) {
+        showToast('error', errorText(error))
+      }
     } finally {
-      setPreviewBusy(false)
+      if (seq === previewSeq.current) setPreviewBusy(false)
     }
   }
 
   const fixIssue = async (issue: ConsistencyIssue): Promise<void> => {
     if (!chapter) return
+    const targetId = chapter.id
+    const seq = (fixSeq.current += 1)
     setFixBusy(issue.detail)
     try {
       const preview = await unwrap(
         window.shiye.fixIssues(chapter.id, `${ISSUE_LABEL[issue.type]}：${issue.detail}`)
       )
+      if (chapterIdRef.current !== targetId || seq !== fixSeq.current) return
       setDiff(preview)
     } catch (error) {
-      showToast('error', errorText(error))
+      if (chapterIdRef.current === targetId && seq === fixSeq.current) {
+        showToast('error', errorText(error))
+      }
     } finally {
-      setFixBusy('')
+      if (seq === fixSeq.current) setFixBusy('')
     }
   }
 
@@ -272,6 +308,27 @@ export function SidePanel(): React.JSX.Element {
           >
             编辑
           </button>
+          <button
+            className="panel-tab"
+            aria-pressed={panelTab === 'plot'}
+            onClick={() => setPanelTab('plot')}
+          >
+            后续
+          </button>
+          <button
+            className="panel-tab"
+            aria-pressed={panelTab === 'qa'}
+            onClick={() => setPanelTab('qa')}
+          >
+            问答
+          </button>
+          <button
+            className="panel-tab"
+            aria-pressed={panelTab === 'insights'}
+            onClick={() => setPanelTab('insights')}
+          >
+            洞察
+          </button>
         </div>
         <button
           className="icon-btn"
@@ -284,7 +341,13 @@ export function SidePanel(): React.JSX.Element {
       </div>
 
       <div className="panel-body">
-        {panelTab === 'write' ? (
+        {panelTab === 'plot' ? (
+          <PlotPanel />
+        ) : panelTab === 'qa' ? (
+          <QaPanel />
+        ) : panelTab === 'insights' ? (
+          <InsightsPanel />
+        ) : panelTab === 'write' ? (
           <>
             <section className="panel-section">
               <h3 className="panel-title">
@@ -315,6 +378,11 @@ export function SidePanel(): React.JSX.Element {
                         <span>{activeJob.label} · 排在队里</span>
                       )}
                     </div>
+                  ) : null}
+                  {reader.project.source === 'imported' ? (
+                    <p className="panel-note">
+                      这是导入的定稿。要改变后面的剧情，请用「后续」页。
+                    </p>
                   ) : null}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button

@@ -85,6 +85,44 @@ export function hashText(text: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
+export interface ProseParagraph {
+  text: string
+  start: number
+  end: number
+  separator: boolean
+}
+
+const SEPARATOR_PATTERN = /^[*＊—–\-_=·\s]{2,}$/u
+
+/** Splits reader content on blank lines while keeping exact source offsets. */
+export function splitContent(content: string): ProseParagraph[] {
+  const paragraphs: ProseParagraph[] = []
+  if (!content) return paragraphs
+  const push = (rawStart: number, rawEnd: number): void => {
+    const raw = content.slice(rawStart, rawEnd)
+    const left = raw.length - raw.trimStart().length
+    const text = raw.trim()
+    if (!text) return
+    const start = rawStart + left
+    paragraphs.push({
+      text,
+      start,
+      end: start + text.length,
+      separator: text.length <= 12 && SEPARATOR_PATTERN.test(text)
+    })
+  }
+  const pattern = /\n{2,}/g
+  let cursor = 0
+  let match = pattern.exec(content)
+  while (match) {
+    push(cursor, match.index)
+    cursor = pattern.lastIndex
+    match = pattern.exec(content)
+  }
+  push(cursor, content.length)
+  return paragraphs
+}
+
 export function splitParagraphs(text: string): string[] {
   return text
     .split(/\n+/)

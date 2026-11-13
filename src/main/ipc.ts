@@ -1,17 +1,16 @@
-import { createWriteStream } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { dialog, ipcMain, shell } from 'electron'
-import type { AppEvent, AppSettings, ExportResult } from '@shared/types'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import type { AppEvent, AppSettings, ExportFormat, ExportResult } from '@shared/types'
 import { CHANNELS } from '@shared/ipc'
 import { AppError } from './errors'
 import type { StoryEngine } from './engine'
 import type { DatabaseHandle } from './db/sqlite'
 import {
-  buildExportText,
   createService,
   exportExtension,
   sanitizeFileName,
-  type ExportPayload
+  type ExportArtifact
 } from './service'
 
 export interface IpcDeps {
@@ -24,32 +23,57 @@ export interface IpcDeps {
   broadcast: (event: AppEvent) => void
 }
 
+const FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
+  txt: { name: '纯文本', extensions: ['txt'] },
+  md: { name: 'Markdown', extensions: ['md'] },
+  epub: { name: 'EPUB', extensions: ['epub'] },
+  docx: { name: 'Word 文档', extensions: ['docx'] },
+  pdf: { name: 'PDF', extensions: ['pdf'] }
+}
+
+async function renderPdf(artifact: ExportArtifact, filePath: string): Promise<void> {
+  const window = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      offscreen: true,
+      sandbox: true,
+      javascript: false
+    }
+  })
+  try {
+    const html = artifact.html ?? '<!doctype html><html><body></body></html>'
+    await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    const buffer = await window.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { top: 0, bottom: 0, left: 0, right: 0 }
+    })
+    await writeFile(filePath, buffer)
+  } finally {
+    window.destroy()
+  }
+}
+
 async function exportBookNode(
-  payload: ExportPayload,
+  artifact: ExportArtifact,
   dataDir: string
 ): Promise<{ path: string }> {
-  const extension = exportExtension(payload.format)
+  const extension = exportExtension(artifact.format)
   const result = await dialog.showSaveDialog({
     title: '导出',
-    defaultPath: join(dataDir, `${sanitizeFileName(payload.title)}.${extension}`),
-    filters:
-      payload.format === 'md'
-        ? [{ name: 'Markdown', extensions: ['md'] }]
-        : [{ name: '纯文本', extensions: ['txt'] }]
+    defaultPath: join(dataDir, `${sanitizeFileName(artifact.fileName.replace(/\.[^.]+$/u, ''))}.${extension}`),
+    filters: [FILTERS[artifact.format]]
   })
   if (result.canceled || !result.filePath) {
     throw new AppError('cancelled', '已取消导出。')
   }
 
-  const filePath = result.filePath
-  const text = buildExportText(payload)
-  const stream = createWriteStream(filePath, { encoding: 'utf8' })
-  await new Promise<void>((resolve, reject) => {
-    stream.once('error', reject)
-    stream.once('finish', resolve)
-    stream.end(text)
-  })
-  return { path: filePath }
+  if (artifact.format === 'pdf') {
+    await renderPdf(artifact, result.filePath)
+  } else {
+    await writeFile(result.filePath, artifact.bytes)
+  }
+  return { path: result.filePath }
 }
 
 async function openDataFolderNode(dataDir: string): Promise<null> {
@@ -62,7 +86,7 @@ export function registerIpc(deps: IpcDeps): void {
   const service = createService({
     ...deps,
     platform: process.platform,
-    writeExport: (payload) => exportBookNode(payload, deps.dataDir),
+    writeExport: (artifact) => exportBookNode(artifact, deps.dataDir),
     openDataFolder: () => openDataFolderNode(deps.dataDir)
   })
 

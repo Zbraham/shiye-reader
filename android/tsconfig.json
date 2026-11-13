@@ -31,6 +31,7 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "../src/renderer/src/env.d.ts",
+    "../src/shared/opencc-js.d.ts",
     "vite.config.ts",
     "capacitor.config.ts"
   ]

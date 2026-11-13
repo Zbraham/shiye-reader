@@ -1,6 +1,6 @@
 import { App as CapacitorApp } from '@capacitor/app'
 import { registerPlugin } from '@capacitor/core'
-import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
+import { Directory, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
 import type {
   DirectiveInput,
@@ -11,23 +11,41 @@ import type {
   TestModelInput
 } from '@shared/api'
 import type {
+  AnalysisBundle,
+  AnalyzeResult,
   ApiResult,
   ApplyRewriteResult,
   AppEvent,
   AppSettings,
   BeatsResult,
+  Bookmark,
   BootstrapData,
   Chapter,
   ChapterMeta,
   Directive,
+  ExportFormat,
   ExportResult,
+  ImportBookInput,
+  ImportUrlInput,
+  OpdsFeed,
+  PlotBeatsInput,
+  PlotRewriteInput,
+  PlotRewriteResult,
   Project,
   ProjectBrief,
+  ProjectMetadataPatch,
+  QaAnswer,
   ReaderData,
+  ReadingStats,
+  RemoteBook,
   RewritePreview,
+  SearchResult,
   SelectTargetsResult,
   SetupDraft,
+  Shelf,
   StorySkeleton,
+  SyncResult,
+  SyncStatus,
   TestModelResult,
   UsageSummary,
   VersionDetail,
@@ -36,15 +54,10 @@ import type {
 import { CHANNELS, type ChannelName } from '@shared/ipc'
 import { themes } from '@shared/tokens'
 import { StoryEngine } from '@main/engine'
+import { AppError } from '@main/errors'
 import { migrate } from '@main/db/schema'
 import { loadSettings, pruneJobs, recoverInterruptedChapters } from '@main/db/repo'
-import {
-  buildExportText,
-  createService,
-  exportExtension,
-  sanitizeFileName,
-  type ExportPayload
-} from '@main/service'
+import { createService, type ExportArtifact } from '@main/service'
 import { useApp } from '@renderer/store'
 import { openAndroidDatabase, type SqlJsDatabase } from './db'
 import { installNativeTransport } from './http'
@@ -76,34 +89,32 @@ function downloadBlob(name: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 4000)
 }
 
-async function shareTextFile(
-  path: string,
-  data: string,
-  title: string
-): Promise<void> {
+async function writeExport(artifact: ExportArtifact): Promise<{ path: string }> {
+  if (artifact.format === 'pdf') {
+    throw new AppError(
+      'unsupported',
+      '安卓暂不支持 PDF 导出，请改用 TXT、Markdown、EPUB 或 DOCX。'
+    )
+  }
+  const fileName = artifact.fileName
+  if (!isNative()) {
+    const buffer = artifact.bytes.slice().buffer as ArrayBuffer
+    downloadBlob(fileName, new Blob([buffer], { type: artifact.mime }))
+    return { path: fileName }
+  }
+  const path = `exports/${fileName}`
   await Filesystem.writeFile({
     path,
     directory: Directory.Cache,
-    data,
-    encoding: Encoding.UTF8,
+    data: bytesToBase64(artifact.bytes),
     recursive: true
   })
   const uri = await Filesystem.getUri({ path, directory: Directory.Cache })
   await Share.share({
-    title,
-    dialogTitle: title,
+    title: '导出书籍',
+    dialogTitle: '保存或分享导出文件',
     files: [uri.uri]
   })
-}
-
-async function writeExport(payload: ExportPayload): Promise<{ path: string }> {
-  const fileName = `${sanitizeFileName(payload.title)}.${exportExtension(payload.format)}`
-  const text = buildExportText(payload)
-  if (!isNative()) {
-    downloadBlob(fileName, new Blob([text], { type: 'text/plain;charset=utf-8' }))
-    return { path: fileName }
-  }
-  await shareTextFile(`exports/${fileName}`, text, `导出《${payload.title}》`)
   return { path: fileName }
 }
 
@@ -279,10 +290,24 @@ export async function initPlatform(): Promise<void> {
     createSkeleton: (draft: SetupDraft) =>
       call<StorySkeleton>(CHANNELS.skeletonCreate, draft),
     createBook: (input) => call<Project>(CHANNELS.bookCreate, input),
+    importBook: (input: ImportBookInput) =>
+      call<Project>(CHANNELS.bookImport, input),
+    importFromUrl: (input: ImportUrlInput) =>
+      call<RemoteBook>(CHANNELS.bookImportUrl, input),
+    importFromOpds: (url: string) =>
+      call<RemoteBook>(CHANNELS.bookImportRemote, { url }),
+    browseOpds: (url: string) =>
+      call<OpdsFeed>(CHANNELS.opdsBrowse, { url }),
     updateProject: (projectId: string, patch: ProjectPatch) =>
       call<Project>(CHANNELS.projectUpdate, { projectId, ...patch }),
+    updateProjectMeta: (projectId: string, patch: ProjectMetadataPatch) =>
+      call<Project>(CHANNELS.projectMeta, { projectId, ...patch }),
     deleteProject: (projectId: string) =>
       call<null>(CHANNELS.projectDelete, { projectId }),
+    deleteProjects: (projectIds: string[]) =>
+      call<null>(CHANNELS.projectBatchDelete, { projectIds }),
+    findDuplicates: () =>
+      call<Record<string, string[]>>(CHANNELS.projectDuplicates),
     readProject: (projectId: string) =>
       call<ReaderData>(CHANNELS.readerRead, { projectId }),
     enterReader: (projectId: string, chapterIdx: number) =>
@@ -311,6 +336,12 @@ export async function initPlatform(): Promise<void> {
       call<null>(CHANNELS.directiveDeactivate, { projectId, directiveId }),
     createBeats: (projectId: string, chapterIdx: number) =>
       call<BeatsResult>(CHANNELS.beats, { projectId, chapterIdx }),
+    plotBeats: (input: PlotBeatsInput) =>
+      call<BeatsResult>(CHANNELS.plotBeats, input),
+    plotRewrite: (input: PlotRewriteInput) =>
+      call<PlotRewriteResult>(CHANNELS.plotRewrite, input),
+    plotCancel: (projectId: string, batchId: string) =>
+      call<null>(CHANNELS.plotCancel, { projectId, batchId }),
     selectTargets: (chapterId: string, instruction: string) =>
       call<SelectTargetsResult>(CHANNELS.rewriteSelect, {
         chapterId,
@@ -346,8 +377,47 @@ export async function initPlatform(): Promise<void> {
     staleAction: (chapterId: string, action: StaleAction) =>
       call<ChapterMeta>(CHANNELS.staleAction, { chapterId, action }),
     getUsage: () => call<UsageSummary>(CHANNELS.usageGet),
-    exportBook: (projectId: string, format: 'txt' | 'md') =>
+    exportBook: (projectId: string, format: ExportFormat) =>
       call<ExportResult>(CHANNELS.exportBook, { projectId, format }),
+    search: (input) => call<SearchResult>(CHANNELS.search, input),
+    listBookmarks: (projectId: string) =>
+      call<Bookmark[]>(CHANNELS.bookmarkList, { projectId }),
+    addBookmark: (input) =>
+      call<Bookmark>(CHANNELS.bookmarkAdd, input),
+    removeBookmark: (bookmarkId: string) =>
+      call<null>(CHANNELS.bookmarkRemove, { bookmarkId }),
+    recordReading: (input) =>
+      call<null>(CHANNELS.readingRecord, input),
+    readingStats: (projectId?: string | null) =>
+      call<ReadingStats>(CHANNELS.readingStats, { projectId: projectId ?? null }),
+    listShelves: () => call<Shelf[]>(CHANNELS.shelfList),
+    createShelf: (name: string) =>
+      call<Shelf>(CHANNELS.shelfCreate, { name }),
+    renameShelf: (shelfId: string, name: string) =>
+      call<Shelf>(CHANNELS.shelfRename, { shelfId, name }),
+    deleteShelf: (shelfId: string) =>
+      call<null>(CHANNELS.shelfDelete, { shelfId }),
+    addToShelf: (shelfId: string, projectIds: string[]) =>
+      call<null>(CHANNELS.shelfAdd, { shelfId, projectIds }),
+    removeFromShelf: (shelfId: string, projectIds: string[]) =>
+      call<null>(CHANNELS.shelfRemove, { shelfId, projectIds }),
+    askQuestion: (input) => call<QaAnswer>(CHANNELS.qaAsk, input),
+    getAnalysis: (projectId: string) =>
+      call<AnalysisBundle>(CHANNELS.analysisGet, { projectId }),
+    analyzeChapter: (input) =>
+      call<AnalyzeResult>(CHANNELS.analysisChapter, input),
+    analyzeBook: (input) =>
+      call<AnalyzeResult>(CHANNELS.analysisBook, input),
+    setIssueStatus: (issueId: string, status: 'open' | 'ignored') =>
+      call<null>(CHANNELS.analysisIssue, { issueId, status }),
+    setForeshadowStatus: (
+      foreshadowId: string,
+      status: 'open' | 'paid' | 'ignored'
+    ) => call<null>(CHANNELS.analysisForeshadow, { foreshadowId, status }),
+    clearAnalysis: (projectId: string) =>
+      call<null>(CHANNELS.analysisClear, { projectId }),
+    syncStatus: () => call<SyncStatus>(CHANNELS.syncStatus),
+    runSync: () => call<SyncResult>(CHANNELS.syncRun),
     openDataFolder: () => call<null>(CHANNELS.dataFolder),
     onEvent: (listener: Listener) => {
       listeners.add(listener)

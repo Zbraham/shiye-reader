@@ -21,6 +21,14 @@ describe('chapter state machine', () => {
     expect(canTransition('stale', 'queued')).toBe(true)
   })
 
+  it('lets finished chapters re-enter the queue for a rewrite', () => {
+    expect(canTransition('final', 'queued')).toBe(true)
+    expect(canTransition('draft', 'queued')).toBe(true)
+    expect(canTransition('queued', 'final')).toBe(true)
+    expect(canTransition('queued', 'stale')).toBe(true)
+    expect(canTransition('generating', 'queued')).toBe(true)
+  })
+
   it('rejects skipping the queue', () => {
     expect(canTransition('outline', 'generating')).toBe(false)
     expect(canTransition('outline', 'final')).toBe(false)

@@ -47,6 +47,8 @@ export interface BuildContextInput {
   currentIdx: number
   currentTitle: string
   currentOutline: ChapterOutline | null
+  /** Verbatim opening kept from an imported chapter (paragraph rewrite). */
+  seedText?: string
   minWords: number
   maxWords: number
   tokenBudget: number
@@ -61,6 +63,7 @@ export interface LayerTokens {
   style: number
   directives: number
   outline: number
+  seed: number
 }
 
 export interface BuiltPrompt {
@@ -329,6 +332,7 @@ function renderPrompt(
     retrieved: string
     previous: string
     previousTail: string
+    seed: string
     outline: string
     style: string
     directives: string
@@ -344,13 +348,23 @@ function renderPrompt(
     sections.push(
       `【上一章原文】\n${parts.previous || '（缺失原文，只能依据摘要承接）'}`
     )
-    sections.push(
-      `【上一章结尾（逐字承接，不得复述）】\n${
-        parts.previousTail || '（缺失）'
-      }`
-    )
+    // When a paragraph seed exists, the seed block already carries the exact
+    // text we must continue from, so repeating it as "previous tail" would
+    // duplicate the same passage in the prompt.
+    if (!parts.seed) {
+      sections.push(
+        `【上一章结尾（逐字承接，不得复述）】\n${
+          parts.previousTail || '（缺失）'
+        }`
+      )
+    }
   } else {
     sections.push('【位置】\n这是第一章，从零开始，不需要承接前文。')
+  }
+  if (parts.seed) {
+    sections.push(
+      `【本章已写好的开头（必须逐字承接，不得重复或改写）】\n${parts.seed}`
+    )
   }
   sections.push(`【本章任务】\n${parts.outline}`)
   sections.push(`【文风】\n${parts.style}`)
@@ -398,9 +412,12 @@ export function buildWritingContext(input: BuildContextInput): BuiltPrompt {
 
   const previousChapter = prior[prior.length - 1]
   let previous = previousChapter?.content ?? ''
-  const previousTail = previousChapter
-    ? truncateByTokens(previousChapter.content, 700, 'tail')
-    : ''
+  const seedText = input.seedText?.trim() ?? ''
+  const previousTail = seedText
+    ? truncateByTokens(seedText, 700, 'tail')
+    : previousChapter
+      ? truncateByTokens(previousChapter.content, 700, 'tail')
+      : ''
   const outline = outlineBlock(
     input.currentIdx,
     input.currentTitle,
@@ -423,6 +440,7 @@ export function buildWritingContext(input: BuildContextInput): BuiltPrompt {
         ? truncateByTokens(previous, 6000, 'tail')
         : previous,
     previousTail,
+    seed: seedText ? truncateByTokens(seedText, 700, 'tail') : '',
     outline,
     style,
     directives: directiveText
@@ -488,7 +506,8 @@ export function buildWritingContext(input: BuildContextInput): BuiltPrompt {
     t4: estimateTokens(current.retrieved),
     style: estimateTokens(current.style),
     directives: estimateTokens(current.directives),
-    outline: estimateTokens(current.outline)
+    outline: estimateTokens(current.outline),
+    seed: estimateTokens(current.seed)
   }
 
   return {

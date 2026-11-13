@@ -13,6 +13,7 @@ import type {
   DirectiveScope,
   DirectiveStatus,
   ForeshadowItem,
+  ImportBookInput,
   JobInfo,
   JobStatus,
   JobType,
@@ -150,8 +151,26 @@ export function rowToProject(row: Row): Project {
     lastOffsetRatio: num(row, 'last_offset_ratio'),
     buffer: Math.min(3, Math.max(1, num(row, 'buffer') || 2)),
     chapterMin: num(row, 'chapter_min') || 1800,
-    chapterMax: num(row, 'chapter_max') || 2600
+    chapterMax: num(row, 'chapter_max') || 2600,
+    source: str(row, 'source') === 'imported' ? 'imported' : 'generated',
+    importedAt: nullableNum(row, 'imported_at'),
+    originalFile: str(row, 'original_file'),
+    author: str(row, 'author'),
+    series: str(row, 'series'),
+    publisher: str(row, 'publisher'),
+    language: str(row, 'language'),
+    description: str(row, 'description'),
+    tags: parseStringArray(str(row, 'tags_json')),
+    rating: Math.min(5, Math.max(0, num(row, 'rating'))),
+    readStatus: parseReadStatus(str(row, 'read_status')),
+    coverData: str(row, 'cover_data')
   }
+}
+
+export function parseReadStatus(raw: string): Project['readStatus'] {
+  return raw === 'want' || raw === 'reading' || raw === 'done' || raw === 'dropped'
+    ? raw
+    : 'none'
 }
 
 export function rowToChapter(row: Row): Chapter {
@@ -162,6 +181,9 @@ export function rowToChapter(row: Row): Chapter {
     title: str(row, 'title'),
     status: (str(row, 'status') || 'outline') as ChapterStatus,
     content: str(row, 'content'),
+    html: str(row, 'html'),
+    volume: str(row, 'volume'),
+    level: Math.max(1, num(row, 'level') || 1),
     wordCount: num(row, 'word_count'),
     summaryL1: str(row, 'summary_l1'),
     summaryL2: str(row, 'summary_l2'),
@@ -171,7 +193,8 @@ export function rowToChapter(row: Row): Chapter {
     staleReason: str(row, 'stale_reason'),
     error: str(row, 'error'),
     issues: parseIssues(str(row, 'issues_json')),
-    updatedAt: num(row, 'updated_at')
+    updatedAt: num(row, 'updated_at'),
+    lastOffsetRatio: num(row, 'last_offset_ratio')
   }
 }
 
@@ -187,7 +210,10 @@ export function rowToChapterMeta(row: Row): ChapterMeta {
     version: num(row, 'version'),
     staleReason: str(row, 'stale_reason'),
     error: str(row, 'error'),
-    updatedAt: num(row, 'updated_at')
+    updatedAt: num(row, 'updated_at'),
+    volume: str(row, 'volume'),
+    level: Math.max(1, num(row, 'level') || 1),
+    lastOffsetRatio: num(row, 'last_offset_ratio')
   }
 }
 
@@ -212,7 +238,9 @@ function rowToDirective(row: Row): Directive {
     status: (str(row, 'status') || 'pending') as DirectiveStatus,
     createdAt: num(row, 'created_at'),
     appliedChapter: nullableNum(row, 'applied_chapter'),
-    expiresChapter: nullableNum(row, 'expires_chapter')
+    expiresChapter: nullableNum(row, 'expires_chapter'),
+    startsChapter: nullableNum(row, 'starts_chapter'),
+    origin: str(row, 'origin') === 'plot' ? 'plot' : 'user'
   }
 }
 
@@ -244,7 +272,8 @@ function parseDiff(raw: string): VersionDiff | null {
 export function listProjects(db: DatabaseHandle): ProjectBrief[] {
   const rows = db
     .prepare(
-      `SELECT p.id, p.title, p.genre, p.last_chapter_idx, p.updated_at, p.created_at,
+      `SELECT p.id, p.title, p.genre, p.source, p.last_chapter_idx, p.updated_at, p.created_at,
+        p.last_offset_ratio, p.author, p.series, p.tags_json, p.rating, p.read_status, p.cover_data,
         (SELECT COUNT(*) FROM chapters c WHERE c.project_id = p.id) AS chapter_count,
         (SELECT COALESCE(SUM(c.word_count), 0) FROM chapters c WHERE c.project_id = p.id) AS word_count,
         (SELECT COUNT(*) FROM chapters c WHERE c.project_id = p.id AND c.status IN ('draft','generating')) AS partial,
@@ -261,13 +290,21 @@ export function listProjects(db: DatabaseHandle): ProjectBrief[] {
       id,
       title: str(row, 'title'),
       genre: str(row, 'genre'),
+      source: str(row, 'source') === 'imported' ? 'imported' : 'generated',
       chapterCount: num(row, 'chapter_count'),
       readChapter: Math.max(1, num(row, 'last_chapter_idx')),
       wordCount: num(row, 'word_count'),
       updatedAt: num(row, 'updated_at'),
       createdAt: num(row, 'created_at'),
       coverIndex: Number.parseInt(hashText(id).slice(0, 4), 16) % 5,
-      hasPartial: num(row, 'partial') > 0
+      hasPartial: num(row, 'partial') > 0,
+      author: str(row, 'author'),
+      series: str(row, 'series'),
+      tags: parseStringArray(str(row, 'tags_json')),
+      rating: Math.min(5, Math.max(0, num(row, 'rating'))),
+      readStatus: parseReadStatus(str(row, 'read_status')),
+      coverData: str(row, 'cover_data'),
+      lastOffsetRatio: num(row, 'last_offset_ratio')
     }
   })
 }
@@ -375,6 +412,104 @@ export function createProject(
   return requireProject(db, id)
 }
 
+function excerptSummary(content: string): string {
+  const clean = content.replace(/\s+/g, ' ').trim()
+  if (clean.length <= 170) return clean
+  return `${clean.slice(0, 80)}……${clean.slice(-80)}`
+}
+
+function medianWordCount(chapters: ImportBookInput['chapters']): number {
+  const lengths = chapters
+    .map((chapter) => countWords(chapter.content))
+    .filter((value) => value > 0)
+    .sort((left, right) => left - right)
+  if (lengths.length === 0) return 2000
+  const middle = Math.floor(lengths.length / 2)
+  const value =
+    lengths.length % 2 === 0
+      ? ((lengths[middle - 1] ?? 0) + (lengths[middle] ?? 0)) / 2
+      : (lengths[middle] ?? 0)
+  return Math.min(6000, Math.max(600, Math.round(value)))
+}
+
+export function createImportedProject(
+  db: DatabaseHandle,
+  input: ImportBookInput
+): Project {
+  if (input.chapters.length === 0 || input.chapters.length > 2000) {
+    throw new AppError('invalid', '导入章节数需要在 1 到 2000 之间。')
+  }
+  const id = randomUUID()
+  const now = Date.now()
+  const targetLen = medianWordCount(input.chapters)
+  const chapterMin = Math.max(400, Math.round(targetLen * 0.9))
+  const chapterMax = Math.max(chapterMin + 120, Math.round(targetLen * 1.3))
+  const styleSample =
+    input.styleSample.trim() || input.chapters[0]?.content.slice(0, 1200) || ''
+
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO projects (
+        id, title, theme_prompt, genre, tone, pov, style_guide, style_sample,
+        target_len_per_chapter, synopsis, selling_point, created_at, updated_at,
+        last_chapter_idx, last_offset_ratio, buffer, chapter_min, chapter_max,
+        source, imported_at, original_file, author, series, publisher, language,
+        description, tags_json, rating, read_status, cover_data
+      ) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, 1, 0, 2, ?, ?, 'imported', ?, ?,
+        ?, ?, ?, ?, ?, ?, 0, 'reading', ?)`
+    ).run(
+      id,
+      input.title,
+      input.genre,
+      input.tone,
+      input.pov,
+      input.styleGuide,
+      styleSample,
+      targetLen,
+      input.description ?? '',
+      now,
+      now,
+      chapterMin,
+      chapterMax,
+      now,
+      input.sourceFile,
+      input.author ?? '',
+      input.series ?? '',
+      input.publisher ?? '',
+      input.language ?? '',
+      input.description ?? '',
+      JSON.stringify(input.tags ?? []),
+      input.coverData ?? ''
+    )
+
+    const insertChapter = db.prepare(
+      `INSERT INTO chapters (
+        id, project_id, idx, title, status, content, html, volume, level, word_count,
+        summary_l1, summary_l2, outline_json, version, generated_at,
+        stale_reason, error, issues_json, updated_at, seed_prefix
+      ) VALUES (?, ?, ?, ?, 'final', ?, ?, ?, ?, ?, '', ?, '', 1, NULL, '', '', '[]', ?, '')`
+    )
+    input.chapters.forEach((chapter, index) => {
+      const idx = index + 1
+      insertChapter.run(
+        randomUUID(),
+        id,
+        idx,
+        chapter.title.trim() || `第${idx}章`,
+        chapter.content,
+        chapter.html ?? '',
+        chapter.volume ?? '',
+        Math.max(1, chapter.level ?? 1),
+        countWords(chapter.content),
+        excerptSummary(chapter.content),
+        now
+      )
+    })
+  })
+
+  return requireProject(db, id)
+}
+
 export function updateProject(
   db: DatabaseHandle,
   projectId: string,
@@ -385,12 +520,23 @@ export function updateProject(
     buffer?: number
     chapterMin?: number
     chapterMax?: number
+    author?: string
+    series?: string
+    publisher?: string
+    language?: string
+    description?: string
+    tags?: string[]
+    rating?: number
+    readStatus?: Project['readStatus']
+    coverData?: string
   }
 ): Project {
   const project = requireProject(db, projectId)
   db.prepare(
     `UPDATE projects SET title = ?, style_sample = ?, style_guide = ?,
-      buffer = ?, chapter_min = ?, chapter_max = ?, updated_at = ?
+      buffer = ?, chapter_min = ?, chapter_max = ?, author = ?, series = ?,
+      publisher = ?, language = ?, description = ?, tags_json = ?, rating = ?,
+      read_status = ?, cover_data = ?, updated_at = ?
      WHERE id = ?`
   ).run(
     patch.title ?? project.title,
@@ -399,6 +545,15 @@ export function updateProject(
     patch.buffer ?? project.buffer,
     patch.chapterMin ?? project.chapterMin,
     patch.chapterMax ?? project.chapterMax,
+    patch.author ?? project.author,
+    patch.series ?? project.series,
+    patch.publisher ?? project.publisher,
+    patch.language ?? project.language,
+    patch.description ?? project.description,
+    JSON.stringify(patch.tags ?? project.tags),
+    Math.min(5, Math.max(0, patch.rating ?? project.rating)),
+    patch.readStatus ?? project.readStatus,
+    patch.coverData ?? project.coverData,
     Date.now(),
     projectId
   )
@@ -411,9 +566,28 @@ export function updateReadCursor(
   chapterIdx: number,
   ratio: number
 ): void {
+  const safe = Math.min(1, Math.max(0, ratio))
+  // Reading position is local state. Touching updated_at here would make a
+  // device that merely scrolled look newer than one that actually edited the
+  // book, and sync would overwrite newer content. Position is merged
+  // separately and never decides the conflict.
   db.prepare(
-    'UPDATE projects SET last_chapter_idx = ?, last_offset_ratio = ?, updated_at = ? WHERE id = ?'
-  ).run(chapterIdx, Math.min(1, Math.max(0, ratio)), Date.now(), projectId)
+    'UPDATE projects SET last_chapter_idx = ?, last_offset_ratio = ? WHERE id = ?'
+  ).run(chapterIdx, safe, projectId)
+  db.prepare(
+    'UPDATE chapters SET last_offset_ratio = ? WHERE project_id = ? AND idx = ?'
+  ).run(safe, projectId, chapterIdx)
+}
+
+/**
+ * Move the book's "continue reading" pointer without claiming a position
+ * inside the destination chapter. The chapter keeps its own saved ratio.
+ */
+export function setReadChapter(db: DatabaseHandle, projectId: string, chapterIdx: number): void {
+  db.prepare('UPDATE projects SET last_chapter_idx = ?, last_offset_ratio = 0 WHERE id = ?').run(
+    chapterIdx,
+    projectId
+  )
 }
 
 export function deleteProject(db: DatabaseHandle, projectId: string): void {
@@ -439,7 +613,11 @@ export function projectWordCount(db: DatabaseHandle, projectId: string): number 
 
 export function listChapterMetas(db: DatabaseHandle, projectId: string): ChapterMeta[] {
   const rows = db
-    .prepare('SELECT * FROM chapters WHERE project_id = ? ORDER BY idx ASC')
+    .prepare(
+      `SELECT id, project_id, idx, title, status, word_count, summary_l2,
+        version, stale_reason, error, updated_at, volume, level, last_offset_ratio
+       FROM chapters WHERE project_id = ? ORDER BY idx ASC`
+    )
     .all(projectId)
   return rows.map((row) => rowToChapterMeta(asRow(row)))
 }
@@ -468,7 +646,7 @@ export function getChapterByIndex(
 
 export function ensureChapterRange(db: DatabaseHandle, projectId: string, upto: number): void {
   requireProject(db, projectId)
-  const limit = Math.min(300, Math.max(1, Math.floor(upto)))
+  const limit = Math.min(2000, Math.max(1, Math.floor(upto)))
   const rows = db
     .prepare('SELECT idx FROM chapters WHERE project_id = ? ORDER BY idx ASC')
     .all(projectId)
@@ -528,7 +706,7 @@ export function savePartial(
   content: string
 ): void {
   db.prepare(
-    'UPDATE chapters SET content = ?, word_count = ?, updated_at = ? WHERE id = ?'
+    `UPDATE chapters SET content = ?, word_count = ?, html = '', updated_at = ? WHERE id = ?`
   ).run(content, countWords(content), Date.now(), chapterId)
 }
 
@@ -541,7 +719,7 @@ export function finishChapter(
   assertTransition(chapter.status, 'final')
   const now = Date.now()
   db.prepare(
-    `UPDATE chapters SET status = 'final', content = ?, word_count = ?, version = version + 1,
+    `UPDATE chapters SET status = 'final', content = ?, word_count = ?, html = '', version = version + 1,
       generated_at = ?, error = '', stale_reason = '', updated_at = ? WHERE id = ?`
   ).run(content, countWords(content), now, now, chapterId)
   return requireChapter(db, chapterId)
@@ -557,7 +735,7 @@ export function failChapter(
   const next: ChapterStatus = chapter.status === 'generating' ? 'draft' : chapter.status
   if (next !== chapter.status) assertTransition(chapter.status, next)
   db.prepare(
-    `UPDATE chapters SET status = ?, content = ?, word_count = ?, error = ?, version = version + 1, updated_at = ? WHERE id = ?`
+    `UPDATE chapters SET status = ?, content = ?, word_count = ?, html = '', error = ?, version = version + 1, updated_at = ? WHERE id = ?`
   ).run(next, content, countWords(content), message, Date.now(), chapterId)
   return requireChapter(db, chapterId)
 }
@@ -572,7 +750,7 @@ export function interruptChapter(
     assertTransition('generating', 'draft')
   }
   db.prepare(
-    `UPDATE chapters SET status = 'draft', content = ?, word_count = ?, version = version + 1, updated_at = ? WHERE id = ?`
+    `UPDATE chapters SET status = 'draft', content = ?, word_count = ?, html = '', version = version + 1, updated_at = ? WHERE id = ?`
   ).run(content, countWords(content), Date.now(), chapterId)
   return requireChapter(db, chapterId)
 }
@@ -589,7 +767,7 @@ export function updateChapterContent(
     (chapter.status === 'stale' ? 'final' : chapter.status === 'final' ? 'final' : chapter.status)
   if (next !== chapter.status) assertTransition(chapter.status, next)
   db.prepare(
-    `UPDATE chapters SET status = ?, content = ?, word_count = ?, version = version + 1,
+    `UPDATE chapters SET status = ?, content = ?, word_count = ?, html = '', version = version + 1,
       error = '', stale_reason = '', updated_at = ? WHERE id = ?`
   ).run(next, content, countWords(content), Date.now(), chapterId)
   return requireChapter(db, chapterId)
@@ -646,6 +824,39 @@ export function updateChapterOutline(
   return requireChapter(db, chapterId)
 }
 
+export function clearChapterOutline(db: DatabaseHandle, chapterId: string): void {
+  db.prepare("UPDATE chapters SET outline_json = '', updated_at = ? WHERE id = ?").run(
+    Date.now(),
+    chapterId
+  )
+}
+
+export function getChapterSeed(db: DatabaseHandle, chapterId: string): string {
+  const row = asRow(
+    db.prepare('SELECT seed_prefix FROM chapters WHERE id = ?').get(chapterId)
+  )
+  return str(row, 'seed_prefix')
+}
+
+export function setChapterSeed(
+  db: DatabaseHandle,
+  chapterId: string,
+  seed: string
+): void {
+  db.prepare('UPDATE chapters SET seed_prefix = ?, updated_at = ? WHERE id = ?').run(
+    seed,
+    Date.now(),
+    chapterId
+  )
+}
+
+export function clearChapterSeed(db: DatabaseHandle, chapterId: string): void {
+  db.prepare("UPDATE chapters SET seed_prefix = '', updated_at = ? WHERE id = ?").run(
+    Date.now(),
+    chapterId
+  )
+}
+
 export function updateChapterSummary(
   db: DatabaseHandle,
   chapterId: string,
@@ -678,7 +889,7 @@ export function restoreChapterSnapshot(
   error: string
 ): Chapter {
   db.prepare(
-    `UPDATE chapters SET status = ?, content = ?, word_count = ?, error = ?, updated_at = ? WHERE id = ?`
+    `UPDATE chapters SET status = ?, content = ?, word_count = ?, html = '', error = ?, updated_at = ? WHERE id = ?`
   ).run(status, content, countWords(content), error, Date.now(), chapterId)
   return requireChapter(db, chapterId)
 }
@@ -742,14 +953,47 @@ export function deleteChapterAndShift(
 export function getPriorChapters(
   db: DatabaseHandle,
   projectId: string,
-  beforeIdx: number
+  beforeIdx: number,
+  fullRecent = 8
 ): Chapter[] {
   const rows = db
     .prepare(
-      "SELECT * FROM chapters WHERE project_id = ? AND idx < ? AND content <> '' ORDER BY idx ASC"
+      `SELECT id, project_id, idx, title, status, word_count,
+        summary_l1, summary_l2, outline_json, version, generated_at,
+        stale_reason, error, issues_json, updated_at, seed_prefix
+       FROM chapters
+       WHERE project_id = ? AND idx < ?
+         AND (content <> '' OR summary_l1 <> '' OR summary_l2 <> '')
+       ORDER BY idx ASC`
     )
     .all(projectId, beforeIdx)
-  return rows.map((row) => rowToChapter(asRow(row)))
+  const chapters = rows.map((row) => rowToChapter(asRow(row)))
+  const recent = db
+    .prepare(
+      `SELECT id, content FROM chapters
+       WHERE project_id = ? AND idx < ? AND content <> ''
+       ORDER BY idx DESC LIMIT ?`
+    )
+    .all(projectId, beforeIdx, Math.max(0, Math.floor(fullRecent)))
+  const byId = new Map(
+    recent.map((raw) => {
+      const row = asRow(raw)
+      return [str(row, 'id'), str(row, 'content')] as const
+    })
+  )
+  for (const chapter of chapters) {
+    chapter.content = byId.get(chapter.id) ?? ''
+  }
+  return chapters
+}
+
+export function lastChapterIdxOf(db: DatabaseHandle, projectId: string): number {
+  const row = asRow(
+    db
+      .prepare('SELECT COALESCE(MAX(idx), 0) AS max_idx FROM chapters WHERE project_id = ?')
+      .get(projectId)
+  )
+  return num(row, 'max_idx')
 }
 
 export function chapterContents(
@@ -1036,9 +1280,10 @@ export function activeDirectives(
       `SELECT * FROM directives
        WHERE project_id = ? AND status IN ('pending','applied')
          AND (expires_chapter IS NULL OR expires_chapter >= ?)
+         AND (starts_chapter IS NULL OR starts_chapter <= ?)
        ORDER BY created_at ASC`
     )
-    .all(projectId, chapterIdx)
+    .all(projectId, chapterIdx, chapterIdx)
   return rows.map((row) => rowToDirective(asRow(row)))
 }
 
@@ -1047,16 +1292,38 @@ export function createDirective(
   projectId: string,
   scope: DirectiveScope,
   content: string,
-  targetChapter: number
+  targetChapter: number,
+  options: {
+    startChapter?: number
+    expiresChapter?: number | null
+    origin?: 'user' | 'plot'
+  } = {}
 ): Directive {
   requireProject(db, projectId)
   const range = DIRECTIVE_RANGE[scope]
-  const expires = range < 0 ? null : targetChapter + range
+  const starts = options.startChapter ?? targetChapter
+  const expires =
+    options.expiresChapter !== undefined
+      ? options.expiresChapter
+      : range < 0
+        ? null
+        : targetChapter + range
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO directives (id, project_id, scope, content, status, created_at, applied_chapter, expires_chapter)
-     VALUES (?, ?, ?, ?, 'pending', ?, NULL, ?)`
-  ).run(id, projectId, scope, content.trim(), Date.now(), expires)
+    `INSERT INTO directives (
+      id, project_id, scope, content, status, created_at, applied_chapter,
+      expires_chapter, starts_chapter, origin
+    ) VALUES (?, ?, ?, ?, 'pending', ?, NULL, ?, ?, ?)`
+  ).run(
+    id,
+    projectId,
+    scope,
+    content.trim(),
+    Date.now(),
+    expires,
+    starts,
+    options.origin ?? 'user'
+  )
   const row = asRow(db.prepare('SELECT * FROM directives WHERE id = ?').get(id))
   return rowToDirective(row)
 }
@@ -1071,6 +1338,12 @@ export function deactivateDirective(
   ).run(directiveId, projectId)
 }
 
+export function deactivatePlotDirectives(db: DatabaseHandle, projectId: string): void {
+  db.prepare(
+    "UPDATE directives SET status = 'expired' WHERE project_id = ? AND origin = 'plot' AND status IN ('pending','applied')"
+  ).run(projectId)
+}
+
 export function markDirectivesApplied(
   db: DatabaseHandle,
   projectId: string,
@@ -1079,8 +1352,9 @@ export function markDirectivesApplied(
   db.prepare(
     `UPDATE directives SET status = 'applied', applied_chapter = ?
      WHERE project_id = ? AND status = 'pending'
-       AND (expires_chapter IS NULL OR expires_chapter >= ?)`
-  ).run(chapterIdx, projectId, chapterIdx)
+       AND (expires_chapter IS NULL OR expires_chapter >= ?)
+       AND (starts_chapter IS NULL OR starts_chapter <= ?)`
+  ).run(chapterIdx, projectId, chapterIdx, chapterIdx)
 }
 
 export function expireDirectives(
@@ -1299,18 +1573,19 @@ export function hasUnfinishedChapters(db: DatabaseHandle): boolean {
 }
 
 export function recoverInterruptedChapters(db: DatabaseHandle): number {
-  const row = asRow(
+  const now = Date.now()
+  const generating = asRow(
     db.prepare("SELECT COUNT(*) AS total FROM chapters WHERE status = 'generating'").get()
   )
-  const total = num(row, 'total')
-  if (total > 0) {
-    db.prepare(
-      "UPDATE chapters SET status = 'draft', updated_at = ? WHERE status = 'generating'"
-    ).run(Date.now())
-    db.prepare(
-      "UPDATE chapters SET status = 'outline', updated_at = ? WHERE status = 'queued'"
-    ).run(Date.now())
-  }
+  const total = num(generating, 'total')
+  db.prepare(
+    "UPDATE chapters SET status = 'draft', seed_prefix = '', updated_at = ? WHERE status = 'generating'"
+  ).run(now)
+  db.prepare(
+    `UPDATE chapters SET status = CASE WHEN content <> '' THEN 'final' ELSE 'outline' END,
+      seed_prefix = '', updated_at = ?
+     WHERE status = 'queued'`
+  ).run(now)
   return total
 }
 

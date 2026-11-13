@@ -92,12 +92,34 @@ export const themes = {
       warnSoft: 'rgba(194, 162, 101, 0.12)',
       selection: 'rgba(179, 155, 124, 0.24)'
     }
+  },
+  black: {
+    label: '纯黑',
+    swatchBg: '#000000',
+    swatchInk: '#BDBDBD',
+    colors: {
+      bg: '#000000',
+      surface: '#080808',
+      raised: '#121212',
+      text: '#C7C7C7',
+      muted: '#929292',
+      faint: '#6E6E6E',
+      line: 'rgba(255, 255, 255, 0.10)',
+      lineStrong: 'rgba(255, 255, 255, 0.18)',
+      accent: '#B8A184',
+      accentSoft: 'rgba(184, 161, 132, 0.12)',
+      danger: '#D08C7D',
+      dangerSoft: 'rgba(208, 140, 125, 0.12)',
+      warn: '#C9A96D',
+      warnSoft: 'rgba(201, 169, 109, 0.12)',
+      selection: 'rgba(184, 161, 132, 0.24)'
+    }
   }
 } as const
 
 export type ThemeName = keyof typeof themes
 
-export const themeOrder: ThemeName[] = ['paper', 'white', 'sage', 'night']
+export const themeOrder: ThemeName[] = ['paper', 'white', 'sage', 'night', 'black']
 
 export const fonts = {
   ui: '"Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif',

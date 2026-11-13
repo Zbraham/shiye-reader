@@ -3,6 +3,7 @@ import {
   DIRECTIVE_SCOPES,
   SETTINGS_LIMITS
 } from './constants'
+import { IMPORT_LIMITS } from './import/types'
 import { themes } from './tokens'
 import type { DirectiveScope } from './types'
 import type { ThemeName } from './tokens'
@@ -154,6 +155,103 @@ export const ProjectUpdateSchema = z.object({
   chapterMax: z.number().int().min(800).max(6000).optional()
 })
 
+export const ProjectMetaSchema = z.object({
+  projectId: IdSchema,
+  title: z.string().min(1).max(60).optional(),
+  author: z.string().max(80).optional(),
+  series: z.string().max(80).optional(),
+  publisher: z.string().max(80).optional(),
+  language: z.string().max(30).optional(),
+  description: z.string().max(4000).optional(),
+  tags: z.array(z.string().max(24)).max(12).optional(),
+  rating: z.number().int().min(0).max(5).optional(),
+  readStatus: z.enum(['none', 'want', 'reading', 'done', 'dropped']).optional(),
+  coverData: z.string().max(400_000).optional()
+})
+
+export const ProjectBatchDeleteSchema = z.object({
+  projectIds: z.array(IdSchema).min(1).max(500)
+})
+
+export const SearchSchema = z.object({
+  projectId: IdSchema.nullable().optional(),
+  query: z.string().min(1).max(120),
+  limit: z.number().int().min(1).max(SETTINGS_LIMITS.searchLimitMax).optional(),
+  beforeIdx: z.number().int().min(1).max(SETTINGS_LIMITS.chaptersMax).nullable().optional()
+})
+
+export const BookmarkAddSchema = z.object({
+  projectId: IdSchema,
+  chapterId: IdSchema,
+  chapterIdx: ChapterIdxSchema,
+  ratio: z.number().min(0).max(1),
+  label: z.string().max(120).default(''),
+  excerpt: z.string().max(300).default('')
+})
+
+export const BookmarkRemoveSchema = z.object({ bookmarkId: IdSchema })
+
+export const ReadingRecordSchema = z.object({
+  projectId: IdSchema,
+  seconds: z.number().int().min(1).max(3600),
+  words: z.number().int().min(0).max(2_000_000)
+})
+
+export const ReadingStatsSchema = z.object({
+  projectId: IdSchema.nullable().optional()
+})
+
+export const ShelfCreateSchema = z.object({ name: z.string().min(1).max(40) })
+
+export const ShelfRenameSchema = z.object({
+  shelfId: IdSchema,
+  name: z.string().min(1).max(40)
+})
+
+export const ShelfDeleteSchema = z.object({ shelfId: IdSchema })
+
+export const ShelfBooksSchema = z.object({
+  shelfId: IdSchema,
+  projectIds: z.array(IdSchema).min(1).max(500)
+})
+
+export const QaAskSchema = z.object({
+  projectId: IdSchema,
+  chapterIdx: ChapterIdxSchema,
+  question: z.string().min(1).max(SETTINGS_LIMITS.qaQuestionMax),
+  selection: z.string().max(2000).optional(),
+  allowSpoilers: z.boolean().optional()
+})
+
+export const AnalyzeChapterSchema = z.object({
+  projectId: IdSchema,
+  chapterIdx: ChapterIdxSchema
+})
+
+export const AnalyzeBookSchema = z.object({
+  projectId: IdSchema,
+  sampleSize: z.number().int().min(1).max(SETTINGS_LIMITS.analysisSampleMax).optional()
+})
+
+export const IssueStatusSchema = z.object({
+  issueId: IdSchema,
+  status: z.enum(['open', 'ignored'])
+})
+
+export const ForeshadowStatusSchema = z.object({
+  foreshadowId: IdSchema,
+  status: z.enum(['open', 'paid', 'ignored'])
+})
+
+export const ImportUrlSchema = z.object({
+  url: z.string().url().max(1000),
+  name: z.string().max(260).optional()
+})
+
+export const OpdsUrlSchema = z.object({
+  url: z.string().url().max(1000)
+})
+
 export const AppSettingsSchema = z.object({
   provider: z.enum(['builtin', 'openai']).optional(),
   baseUrl: z.string().max(500).optional(),
@@ -185,7 +283,29 @@ export const AppSettingsSchema = z.object({
   consistencyCheck: z.boolean().optional(),
   openLastOnLaunch: z.boolean().optional(),
   lastProjectId: z.string().max(64).nullable().optional(),
-  lastView: z.enum(['library', 'reader']).optional()
+  lastView: z.enum(['library', 'reader']).optional(),
+  pageMode: z.enum(['scroll', 'paged']).optional(),
+  lineHeight: z
+    .number()
+    .min(SETTINGS_LIMITS.lineHeightMin)
+    .max(SETTINGS_LIMITS.lineHeightMax)
+    .optional(),
+  letterSpacing: z.number().min(0).max(SETTINGS_LIMITS.letterSpacingMax).optional(),
+  paragraphGap: z.number().min(0).max(SETTINGS_LIMITS.paragraphGapMax).optional(),
+  pageWidth: z
+    .number()
+    .int()
+    .min(SETTINGS_LIMITS.pageWidthMin)
+    .max(SETTINGS_LIMITS.pageWidthMax)
+    .optional(),
+  justify: z.boolean().optional(),
+  brightness: z.number().min(0.4).max(1).optional(),
+  vertical: z.boolean().optional(),
+  convert: z.enum(['none', 's2t', 't2s']).optional(),
+  syncUrl: z.string().max(500).optional(),
+  syncUser: z.string().max(200).optional(),
+  syncPassword: z.string().max(500).optional(),
+  syncPath: z.string().max(200).optional()
 })
 
 export const TestModelSchema = z.object({
@@ -196,12 +316,96 @@ export const TestModelSchema = z.object({
 
 export const ExportSchema = z.object({
   projectId: IdSchema,
-  format: z.enum(['txt', 'md'])
+  format: z.enum(['txt', 'md', 'epub', 'docx', 'pdf'])
 })
 
 export const BeatsSchema = z.object({
   projectId: IdSchema,
   chapterIdx: ChapterIdxSchema
+})
+
+export const ImportBookSchema = z
+  .object({
+    title: z.string().min(1).max(60),
+    genre: z.string().min(1).max(30),
+    tone: z.string().min(1).max(30),
+    pov: z.string().min(1).max(30),
+    styleSample: z.string().max(SETTINGS_LIMITS.styleSampleMax),
+    styleGuide: z.string().max(300),
+    targetLenPerChapter: z.number().int().min(600).max(6000),
+    sourceFile: z.string().max(260),
+    author: z.string().max(80).optional(),
+    series: z.string().max(80).optional(),
+    publisher: z.string().max(80).optional(),
+    language: z.string().max(30).optional(),
+    description: z.string().max(4000).optional(),
+    tags: z.array(z.string().max(24)).max(12).optional(),
+    coverData: z.string().max(400_000).optional(),
+    chapters: z
+      .array(
+        z.object({
+          title: z.string().min(1).max(120),
+          content: z.string().min(1).max(120_000),
+          html: z.string().max(IMPORT_LIMITS.chapterHtmlChars).optional(),
+          volume: z.string().max(80).optional(),
+          level: z.number().int().min(1).max(6).optional()
+        })
+      )
+      .min(1)
+      .max(IMPORT_LIMITS.chapters)
+  })
+  .superRefine((value, ctx) => {
+    const total = value.chapters.reduce((sum, chapter) => sum + chapter.content.length, 0)
+    if (total > IMPORT_LIMITS.totalChars) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['chapters'],
+        message: '正文总字数超过上限。'
+      })
+    }
+  })
+
+const PlotAnchorObject = z.object({
+  projectId: IdSchema,
+  fromIdx: ChapterIdxSchema,
+  startMode: z.enum(['after', 'include', 'paragraph']),
+  startOffset: z.number().int().min(0).nullable()
+})
+
+function refinePlotAnchor(
+  value: {
+    startMode: 'after' | 'include' | 'paragraph'
+    startOffset: number | null
+  },
+  ctx: z.RefinementCtx
+): void {
+  if (value.startMode === 'paragraph') {
+    if (value.startOffset === null || value.startOffset < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['startOffset'],
+        message: '请选择段落位置。'
+      })
+    }
+  } else if (value.startOffset !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['startOffset'],
+      message: '章节起点不需要段落位置。'
+    })
+  }
+}
+
+export const PlotBeatsSchema = PlotAnchorObject.superRefine(refinePlotAnchor)
+
+export const PlotRewriteSchema = PlotAnchorObject.extend({
+  direction: z.string().min(1).max(SETTINGS_LIMITS.instructionMax),
+  batchSize: z.literal(3)
+}).superRefine(refinePlotAnchor)
+
+export const PlotCancelSchema = z.object({
+  projectId: IdSchema,
+  batchId: IdSchema
 })
 
 export const FixIssuesSchema = z.object({

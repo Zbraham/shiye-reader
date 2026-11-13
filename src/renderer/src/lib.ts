@@ -42,50 +42,24 @@ export function stripChapterPrefix(title: string, idx: number): string {
   return cleaned || `第 ${idx} 章`
 }
 
-export interface ProseParagraph {
-  text: string
-  start: number
-  end: number
-  separator: boolean
-}
-
-const SEPARATOR_PATTERN = /^[*＊—–\-_=·\s]{2,}$/u
-
-export function splitContent(content: string): ProseParagraph[] {
-  const paragraphs: ProseParagraph[] = []
-  if (!content) return paragraphs
-  const push = (rawStart: number, rawEnd: number): void => {
-    const raw = content.slice(rawStart, rawEnd)
-    const left = raw.length - raw.trimStart().length
-    const text = raw.trim()
-    if (!text) return
-    const start = rawStart + left
-    paragraphs.push({
-      text,
-      start,
-      end: start + text.length,
-      separator: text.length <= 12 && SEPARATOR_PATTERN.test(text)
-    })
-  }
-  const pattern = /\n{2,}/g
-  let cursor = 0
-  let match = pattern.exec(content)
-  while (match) {
-    push(cursor, match.index)
-    cursor = pattern.lastIndex
-    match = pattern.exec(content)
-  }
-  push(cursor, content.length)
-  return paragraphs
-}
+export type { ProseParagraph } from '@shared/text'
+export { splitContent } from '@shared/text'
 
 export function applyAppearance(settings: AppSettings): void {
   const root = document.documentElement
   root.dataset['theme'] = settings.theme
-  root.style.colorScheme = settings.theme === 'night' ? 'dark' : 'light'
+  root.dataset['vertical'] = settings.vertical ? 'true' : 'false'
+  root.style.colorScheme =
+    settings.theme === 'night' || settings.theme === 'black' ? 'dark' : 'light'
   root.style.setProperty('--reader-size', `${settings.fontSize}px`)
   root.style.setProperty('--reader-font', `var(--font-${settings.readerFont})`)
   root.style.setProperty('--reader-indent', settings.indent ? '2em' : '0')
+  root.style.setProperty('--reader-leading', `${settings.lineHeight}`)
+  root.style.setProperty('--reader-tracking', `${settings.letterSpacing}em`)
+  root.style.setProperty('--reader-paragraph-gap', `${settings.paragraphGap}em`)
+  root.style.setProperty('--reader-measure', `${settings.pageWidth}px`)
+  root.style.setProperty('--reader-align', settings.justify ? 'justify' : 'start')
+  root.style.setProperty('--app-brightness', `${settings.brightness}`)
 }
 
 export function chapterFromMeta(meta: ChapterMeta, content: string): Chapter {
@@ -96,6 +70,9 @@ export function chapterFromMeta(meta: ChapterMeta, content: string): Chapter {
     title: meta.title,
     status: meta.status,
     content,
+    html: '',
+    volume: meta.volume,
+    level: meta.level,
     wordCount: meta.wordCount,
     summaryL1: '',
     summaryL2: meta.summaryL2,
@@ -105,7 +82,8 @@ export function chapterFromMeta(meta: ChapterMeta, content: string): Chapter {
     staleReason: meta.staleReason,
     error: meta.error,
     issues: [],
-    updatedAt: meta.updatedAt
+    updatedAt: meta.updatedAt,
+    lastOffsetRatio: meta.lastOffsetRatio
   }
 }
 
@@ -119,6 +97,9 @@ export function mergeChapterMeta(chapter: Chapter, meta: ChapterMeta): Chapter {
     version: meta.version,
     staleReason: meta.staleReason,
     error: meta.error,
-    updatedAt: meta.updatedAt
+    updatedAt: meta.updatedAt,
+    volume: meta.volume,
+    level: meta.level,
+    lastOffsetRatio: meta.lastOffsetRatio
   }
 }

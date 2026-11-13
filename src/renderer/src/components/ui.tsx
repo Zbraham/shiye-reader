@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { iconStroke } from '@shared/tokens'
 import { onBack } from '../back'
@@ -12,6 +12,42 @@ interface DialogProps {
 }
 
 export function Dialog({ title, onClose, children, footer, wide }: DialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+
+  // Move focus into the dialog and hand it back when it closes, so keyboard
+  // and screen-reader users are not stranded behind the overlay. Tab is kept
+  // inside the dialog while it is open.
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const node = dialogRef.current
+    if (node && !node.contains(document.activeElement)) node.focus()
+    return () => {
+      if (previous && previous.isConnected) previous.focus()
+    }
+  }, [])
+
+  const trapFocus = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'Tab') return
+    const node = dialogRef.current
+    if (!node) return
+    const focusable = Array.from(
+      node.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((item) => item.offsetParent !== null)
+    if (focusable.length === 0) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (!first || !last) return
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -33,11 +69,14 @@ export function Dialog({ title, onClose, children, footer, wide }: DialogProps):
       }}
     >
       <div
+        ref={dialogRef}
         className="dialog"
         data-wide={wide ? 'true' : 'false'}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
+        onKeyDown={trapFocus}
       >
         <div className="dialog-head">
           <h2 className="dialog-title">{title}</h2>

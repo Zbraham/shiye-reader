@@ -7,12 +7,18 @@ import type {
   Chapter,
   ChapterMeta,
   ChapterOutline,
+  ChapterStatus,
   Chunk,
   CreateProjectInput,
   Directive,
   DirectiveScope,
+  ImportBookInput,
   JobInfo,
   ManualRewriteInput,
+  PlotBeatsInput,
+  PlotRewriteInput,
+  PlotRewriteResult,
+  PlotUnitResult,
   Project,
   RewriteEdit,
   RewritePreview,
@@ -22,7 +28,7 @@ import type {
   StorySkeleton,
   TestModelResult
 } from '@shared/types'
-import { SETTINGS_LIMITS } from '@shared/constants'
+import { SETTINGS_LIMITS, isReadableStatus } from '@shared/constants'
 import {
   countWords,
   estimateTokens,
@@ -32,6 +38,8 @@ import {
   truncateByTokens
 } from '@shared/text'
 import { changedRatio } from '@shared/diff'
+import { PlotPlanError, planPlot, type PlotPlan } from '@shared/plot/plan'
+import { snapParagraphEnd } from '@shared/plot/select'
 import { chunkChapter } from './text/chunker'
 import { buildWritingContext, contextBudget } from './text/context'
 import type { Writer } from './llm'
@@ -46,9 +54,13 @@ import {
   addForeshadow,
   addNewFact,
   appendTimeline,
+  clearChapterOutline,
+  clearChapterSeed,
   createDirective,
+  createImportedProject,
   createProject,
   deactivateDirective as deactivateDirectiveRepo,
+  deactivatePlotDirectives,
   createVersion,
   deleteChapterAndShift,
   deleteProject,
@@ -59,11 +71,13 @@ import {
   finishChapter,
   getChapterById,
   getChapterByIndex,
+  getChapterSeed,
   getForeshadow,
   getPriorChapters,
   getProject,
   getVersion,
   interruptChapter,
+  lastChapterIdxOf,
   listChapterMetas,
   listCharacters,
   listChunks,
@@ -79,12 +93,14 @@ import {
   restoreChapterSnapshot,
   savePartial,
   setChapterError,
+  setChapterSeed,
   touchProject,
   updateChapterContent,
   updateChapterIssues,
   updateChapterOutline,
   updateChapterStatus,
   updateChapterSummary,
+  setReadChapter,
   updateProject,
   updateReadCursor as saveReadCursor,
   usageSummary
@@ -125,6 +141,28 @@ interface PendingPreview {
   chunks: Map<string, ChunkSnapshot>
   manualRange: { start: number; end: number } | null
   createdAt: number
+}
+
+interface PlotBatchState {
+  batchId: string
+  projectId: string
+  direction: string
+  plan: PlotPlan
+  directiveId: string
+  /** Index into plan.units of the next unit to prepare. */
+  nextIndex: number
+  stopped: boolean
+  chapterIds: Map<number, string>
+  versions: Map<number, string | null>
+}
+
+interface EnqueueChapterOptions {
+  urgent?: boolean
+  regenerate?: boolean
+  batchId?: string
+  useSeed?: boolean
+  skipArchive?: boolean
+  originalStatus?: ChapterStatus
 }
 
 const PREVIEW_TTL = 30 * 60 * 1000
@@ -169,7 +207,10 @@ function toMeta(chapter: Chapter): ChapterMeta {
     version: chapter.version,
     staleReason: chapter.staleReason,
     error: chapter.error,
-    updatedAt: chapter.updatedAt
+    updatedAt: chapter.updatedAt,
+    volume: chapter.volume,
+    level: chapter.level,
+    lastOffsetRatio: chapter.lastOffsetRatio
   }
 }
 
@@ -180,6 +221,8 @@ function displayIdOf(chapterIdx: number, chunkIdx: number): string {
 export class StoryEngine {
   readonly queue: TaskQueue
   private readonly previews = new Map<string, PendingPreview>()
+  private readonly plotBatches = new Map<string, PlotBatchState>()
+  private readonly chapterBatch = new Map<string, string>()
 
   constructor(private readonly deps: EngineDeps) {
     this.queue = new TaskQueue(
@@ -199,6 +242,15 @@ export class StoryEngine {
 
   private writer(): Writer {
     return createWriter(this.settings)
+  }
+
+  /** Used by reader Q&A and book analysis, which need a plain completion. */
+  get writerMode(): 'builtin' | 'openai' {
+    return this.settings.provider === 'openai' ? 'openai' : 'builtin'
+  }
+
+  complete(system: string, user: string, signal: AbortSignal): Promise<string> {
+    return this.writer().complete(system, user, signal)
   }
 
   private emit(event: AppEvent): void {
@@ -235,6 +287,14 @@ export class StoryEngine {
     this.emitProjectsChanged()
     this.ensureBuffer(project.id, 1)
     return requireProject(this.db, project.id)
+  }
+
+  /** Imports an already-written novel. Never calls the model or writes ahead. */
+  importBook(input: ImportBookInput): Project {
+    const project = createImportedProject(this.db, input)
+    this.emitProjectsChanged()
+    this.emit({ type: 'project:changed', project })
+    return project
   }
 
   async createSkeleton(draft: SetupDraft): Promise<StorySkeleton> {
@@ -291,19 +351,20 @@ export class StoryEngine {
   enqueueChapter(
     projectId: string,
     idx: number,
-    options: { urgent?: boolean; regenerate?: boolean } = {}
+    options: EnqueueChapterOptions = {}
   ): void {
     requireProject(this.db, projectId)
     const chapter = ensureChapter(this.db, projectId, idx)
     const key = `chapter:${chapter.id}`
     if (this.queue.hasKey(key)) return
 
+    const originalStatus = options.originalStatus ?? chapter.status
     if (!options.regenerate) {
       if (chapter.status !== 'outline' && chapter.status !== 'queued') return
       if (chapter.status === 'outline') {
         updateChapterStatus(this.db, chapter.id, 'queued')
       }
-    } else if (chapter.status === 'outline') {
+    } else if (chapter.status !== 'queued' && chapter.status !== 'generating') {
       updateChapterStatus(this.db, chapter.id, 'queued')
     }
 
@@ -316,15 +377,33 @@ export class StoryEngine {
       type: 'chapter',
       projectId,
       chapterId: chapter.id,
-      run: (signal) =>
-        this.runChapter(chapter.id, signal, { regenerate: options.regenerate ?? false })
+      run: async (signal) => {
+        try {
+          await this.runChapter(chapter.id, signal, {
+            regenerate: options.regenerate ?? false,
+            originalStatus,
+            batchId: options.batchId,
+            useSeed: options.useSeed ?? false,
+            skipArchive: options.skipArchive ?? false
+          })
+          if (options.batchId) this.advancePlotBatch(options.batchId, chapter.id)
+        } catch (error) {
+          if (options.batchId) {
+            this.failPlotBatch(
+              options.batchId,
+              error instanceof Error ? error.message : '这一批改写没有完成。'
+            )
+          }
+          throw error
+        }
+      }
     })
   }
 
   /** Keeps the read window and its buffer written ahead. */
   ensureBuffer(projectId: string, readIdx: number): void {
     const project = getProject(this.db, projectId)
-    if (!project) return
+    if (!project || project.source === 'imported') return
     const buffer = Math.min(3, Math.max(1, project.buffer))
     const upto = Math.min(SETTINGS_LIMITS.chaptersMax, Math.max(1, readIdx) + buffer)
     ensureChapterRange(this.db, projectId, upto)
@@ -339,36 +418,57 @@ export class StoryEngine {
 
   enterReader(projectId: string, chapterIdx: number): void {
     const project = requireProject(this.db, projectId)
-    const buffer = Math.min(3, Math.max(1, project.buffer))
-    ensureChapterRange(
-      this.db,
-      projectId,
-      Math.min(SETTINGS_LIMITS.chaptersMax, chapterIdx + buffer)
-    )
-    this.ensureBuffer(projectId, chapterIdx)
-    saveReadCursor(this.db, projectId, chapterIdx, project.lastOffsetRatio)
+    if (project.source !== 'imported') {
+      const buffer = Math.min(3, Math.max(1, project.buffer))
+      ensureChapterRange(
+        this.db,
+        projectId,
+        Math.min(SETTINGS_LIMITS.chaptersMax, chapterIdx + buffer)
+      )
+      this.ensureBuffer(projectId, chapterIdx)
+    }
+    // Navigation only moves the "continue reading" pointer. Writing the
+    // previous chapter's ratio onto the destination row made the next chapter
+    // open near its end, and would also overwrite the position the reader had
+    // already saved for it.
+    if (project.lastChapterIdx !== chapterIdx) {
+      setReadChapter(this.db, projectId, chapterIdx)
+    }
     this.emit({ type: 'project:changed', project: requireProject(this.db, projectId) })
   }
 
   updateReadCursor(projectId: string, chapterIdx: number, ratio: number): void {
+    const project = requireProject(this.db, projectId)
     saveReadCursor(this.db, projectId, chapterIdx, ratio)
-    this.ensureBuffer(projectId, chapterIdx)
+    if (project.source !== 'imported') this.ensureBuffer(projectId, chapterIdx)
     this.emit({ type: 'project:changed', project: requireProject(this.db, projectId) })
   }
 
   private async runChapter(
     chapterId: string,
     signal: AbortSignal,
-    options: { regenerate: boolean }
+    options: {
+      regenerate: boolean
+      originalStatus?: ChapterStatus
+      batchId?: string
+      useSeed?: boolean
+      skipArchive?: boolean
+    }
   ): Promise<void> {
     let chapter = requireChapter(this.db, chapterId)
     const project = requireProject(this.db, chapter.projectId)
     const writer = this.writer()
+    const originalStatus =
+      options.originalStatus && isReadableStatus(options.originalStatus)
+        ? options.originalStatus
+        : chapter.content
+          ? 'final'
+          : 'outline'
     const snapshot: ChapterSnapshot | null = chapter.content
-      ? { content: chapter.content, status: chapter.status, wordCount: chapter.wordCount }
+      ? { content: chapter.content, status: originalStatus, wordCount: chapter.wordCount }
       : null
 
-    if (snapshot && options.regenerate) {
+    if (snapshot && options.regenerate && !options.skipArchive) {
       createVersion(
         this.db,
         chapterId,
@@ -381,8 +481,36 @@ export class StoryEngine {
       pruneVersions(this.db, chapterId)
     }
 
+    const seed =
+      options.useSeed && chapter.content
+        ? getChapterSeed(this.db, chapterId).trim()
+        : ''
+    const seedBase = seed ? `${seed.replace(/\s+$/u, '')}\n\n` : ''
+    const seedWords = countWords(seed)
+
     chapter = this.markGenerating(chapter)
     this.emitChapterChanged(chapterId)
+
+    // Cancelling while the outline is still being written never reaches the
+    // streaming try/catch below, so put the chapter back explicitly.
+    const recoverBeforeStream = (): void => {
+      if (snapshot) {
+        const restored = restoreChapterSnapshot(
+          this.db,
+          chapterId,
+          snapshot.content,
+          snapshot.status,
+          ''
+        )
+        this.emitChapterContent(restored)
+        this.emitChapterChanged(chapterId)
+      } else {
+        const draft = interruptChapter(this.db, chapterId, '')
+        this.emitChapterChanged(draft.id)
+        this.emitChapterContent(draft)
+      }
+      clearChapterSeed(this.db, chapterId)
+    }
 
     const prior = getPriorChapters(this.db, project.id, chapter.idx)
     const characters = listCharacters(this.db, project.id)
@@ -422,16 +550,22 @@ export class StoryEngine {
         )
         chapter = updateChapterOutline(this.db, chapterId, outline)
       } catch (error) {
-        if (signal.aborted) throw new CancelledError()
+        if (signal.aborted) {
+          recoverBeforeStream()
+          throw new CancelledError()
+        }
         logError('outline', error)
         outline = null
       }
     }
 
-    if (signal.aborted) throw new CancelledError()
+    if (signal.aborted) {
+      recoverBeforeStream()
+      throw new CancelledError()
+    }
 
-    const minWords = Math.max(400, project.chapterMin)
-    const maxWords = Math.max(minWords + 100, project.chapterMax)
+    const minWords = Math.max(400, project.chapterMin - seedWords)
+    const maxWords = Math.max(minWords + 100, project.chapterMax - seedWords)
     const previous = prior[prior.length - 1]
     const prompt = buildWritingContext({
       project: {
@@ -460,6 +594,7 @@ export class StoryEngine {
       currentIdx: chapter.idx,
       currentTitle: chapter.title,
       currentOutline: outline,
+      seedText: seed || undefined,
       minWords,
       maxWords,
       tokenBudget: contextBudget(this.settings.contextWindow)
@@ -469,7 +604,8 @@ export class StoryEngine {
       type: 'chapter:reset',
       chapterId,
       projectId: project.id,
-      idx: chapter.idx
+      idx: chapter.idx,
+      base: seed || undefined
     })
 
     let output = ''
@@ -499,7 +635,13 @@ export class StoryEngine {
       } else {
         // A marker was removed from the tail; retract and resend.
         pending = ''
-        this.emit({ type: 'chapter:reset', chapterId, projectId: project.id, idx: chapter.idx })
+        this.emit({
+          type: 'chapter:reset',
+          chapterId,
+          projectId: project.id,
+          idx: chapter.idx,
+          base: seed || undefined
+        })
         pending = clean
       }
       sent = clean
@@ -510,13 +652,15 @@ export class StoryEngine {
       }
       if (now - lastPersist >= 2000) {
         lastPersist = now
-        savePartial(this.db, chapterId, cleanProse(output))
+        savePartial(this.db, chapterId, `${seedBase}${cleanProse(output)}`)
       }
     }
 
-    const previousTail = previous
-      ? truncateByTokens(previous.content, 700, 'tail')
-      : ''
+    const previousTail = seed
+      ? truncateByTokens(seed, 700, 'tail')
+      : previous
+        ? truncateByTokens(previous.content, 700, 'tail')
+        : ''
     const writeInput = {
       prompt,
       project,
@@ -544,7 +688,13 @@ export class StoryEngine {
         finalText = normalizeProse(stripModelMarkers(lastRaw).text)
         if (countWords(finalText) >= 60) break
         if (attempt === 2) throw new EmptyResponseError()
-        this.emit({ type: 'chapter:reset', chapterId, projectId: project.id, idx: chapter.idx })
+        this.emit({
+          type: 'chapter:reset',
+          chapterId,
+          projectId: project.id,
+          idx: chapter.idx,
+          base: seed || undefined
+        })
       }
 
       if (!finalText) throw new EmptyResponseError()
@@ -552,8 +702,10 @@ export class StoryEngine {
       const facts = stripped.facts
       finalText = normalizeProse(stripped.text)
       if (countWords(finalText) < 60) throw new EmptyResponseError()
+      if (seedBase) finalText = cleanProse(`${seedBase}${finalText}`)
 
       const finished = finishChapter(this.db, chapterId, finalText)
+      clearChapterSeed(this.db, chapterId)
       this.rebuildChunks(finished)
       for (const fact of facts) {
         addNewFact(this.db, project.id, chapter.idx, fact.key, fact.value)
@@ -577,18 +729,21 @@ export class StoryEngine {
 
       this.enqueueSummary(chapterId)
       if (this.settings.consistencyCheck) this.enqueueCheck(chapterId)
-      const fresh = requireProject(this.db, project.id)
-      this.ensureBuffer(project.id, fresh.lastChapterIdx)
+      if (!options.batchId) {
+        const fresh = requireProject(this.db, project.id)
+        this.ensureBuffer(project.id, fresh.lastChapterIdx)
+      }
     } catch (error) {
       const cancelled = signal.aborted || error instanceof CancelledError
         || (error instanceof Error && error.name === 'AbortError')
       const partial = normalizeProse(stripModelMarkers(output).text)
       const usable = countWords(partial) >= 30
+      const partialWithSeed = seedBase ? cleanProse(`${seedBase}${partial}`) : partial
 
       try {
         if (cancelled) {
           if (usable) {
-            const draft = interruptChapter(this.db, chapterId, partial)
+            const draft = interruptChapter(this.db, chapterId, partialWithSeed)
             this.rebuildChunks(draft)
             this.emitChapterContent(draft)
             this.emitChapterChanged(chapterId)
@@ -607,12 +762,13 @@ export class StoryEngine {
             this.emitChapterChanged(draft.id)
             this.emitChapterContent(draft)
           }
+          clearChapterSeed(this.db, chapterId)
           throw new CancelledError()
         }
 
         const message = toReadableMessage(error)
         if (usable) {
-          const draft = failChapter(this.db, chapterId, partial, message)
+          const draft = failChapter(this.db, chapterId, partialWithSeed, message)
           this.rebuildChunks(draft)
           this.emitChapterContent(draft)
           this.emitChapterChanged(chapterId)
@@ -634,6 +790,7 @@ export class StoryEngine {
           setChapterError(this.db, chapterId, message)
           this.emitChapterChanged(chapterId)
         }
+        clearChapterSeed(this.db, chapterId)
         this.emitProjectsChanged()
       } catch (handlerError) {
         logError('chapter-recovery', handlerError)
@@ -644,10 +801,10 @@ export class StoryEngine {
 
   private markGenerating(chapter: Chapter): Chapter {
     let current = chapter
-    if (current.status === 'outline') {
-      current = updateChapterStatus(this.db, chapter.id, 'queued')
-    }
     if (current.status !== 'generating') {
+      if (current.status !== 'queued') {
+        current = updateChapterStatus(this.db, chapter.id, 'queued')
+      }
       current = updateChapterStatus(this.db, chapter.id, 'generating')
     }
     return current
@@ -748,7 +905,9 @@ export class StoryEngine {
 
   async beats(projectId: string, chapterIdx: number): Promise<BeatsResult> {
     const project = requireProject(this.db, projectId)
-    ensureChapterRange(this.db, projectId, chapterIdx)
+    if (project.source !== 'imported') {
+      ensureChapterRange(this.db, projectId, chapterIdx)
+    }
     const prior = getPriorChapters(this.db, projectId, chapterIdx)
     const beats = await this.writer().beats(
       {
@@ -764,6 +923,357 @@ export class StoryEngine {
       AbortSignal.timeout(TASK_TIMEOUT)
     )
     return { beats }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Plot continuation                                                 */
+  /* ---------------------------------------------------------------- */
+
+  async plotBeats(input: PlotBeatsInput): Promise<BeatsResult> {
+    const project = requireProject(this.db, input.projectId)
+    const anchor = getChapterByIndex(this.db, project.id, input.fromIdx)
+    if (!anchor) throw new AppError('not_found', '起点章节不存在，请刷新目录后重试。')
+    if (input.startMode === 'after' || input.startMode === 'paragraph') {
+      if (!anchor.content.trim()) {
+        throw new AppError('empty', '这一章还没有正文，无法据此续写。')
+      }
+    }
+    let seed = ''
+    if (input.startMode === 'paragraph') {
+      const offset = input.startOffset ?? 0
+      if (offset <= 0 || offset >= anchor.content.length) {
+        throw new AppError('invalid', '请选择本章中的一段文字作为改写起点。')
+      }
+      seed = anchor.content.slice(0, offset)
+    }
+
+    const targetIdx = input.startMode === 'after' ? input.fromIdx + 1 : input.fromIdx
+    const prior = getPriorChapters(
+      this.db,
+      project.id,
+      input.startMode === 'after' ? input.fromIdx + 1 : input.fromIdx
+    )
+    const recent = prior
+      .slice(-5)
+      .map(
+        (item) =>
+          `第${item.idx}章：${item.summaryL1 || item.summaryL2 || truncateByTokens(item.content, 100)}`
+      )
+      .join('\n')
+    const lastContent =
+      input.startMode === 'after'
+        ? truncateByTokens(anchor.content, 600, 'tail')
+        : input.startMode === 'paragraph'
+          ? truncateByTokens(seed, 600, 'tail')
+          : truncateByTokens(prior[prior.length - 1]?.content ?? '', 600, 'tail')
+
+    const beats = await this.writer().beats(
+      {
+        project,
+        idx: targetIdx,
+        recent,
+        lastContent,
+        characterNames: listCharacters(this.db, project.id).map((item) => item.name)
+      },
+      AbortSignal.timeout(TASK_TIMEOUT)
+    )
+    return { beats }
+  }
+
+  async plotRewrite(input: PlotRewriteInput): Promise<PlotRewriteResult> {
+    const project = requireProject(this.db, input.projectId)
+    const direction = input.direction.trim()
+    if (!direction) throw new AppError('invalid', '先写一句希望故事往哪走。')
+    for (const batch of this.plotBatches.values()) {
+      if (batch.projectId === project.id) {
+        throw new AppError('busy', '上一批改写还没有结束，请等它完成或先停止。')
+      }
+    }
+
+    const chapterCount = lastChapterIdxOf(this.db, project.id)
+    const anchor = getChapterByIndex(this.db, project.id, input.fromIdx)
+    if (!anchor) throw new AppError('not_found', '起点章节不存在，请刷新目录后重试。')
+    if (anchor.status === 'queued' || anchor.status === 'generating') {
+      throw new AppError('busy', '这一章正在写入，请等它写完再改后续。')
+    }
+    if (input.startMode !== 'include' && !anchor.content.trim()) {
+      throw new AppError('empty', '这一章还没有正文，无法保留后改写。')
+    }
+    if (input.startMode === 'paragraph') {
+      const offset = input.startOffset ?? 0
+      if (offset <= 0 || offset >= anchor.content.length) {
+        throw new AppError('invalid', '请选择本章中靠前的段落作为起点。')
+      }
+      if (snapParagraphEnd(anchor.content, offset) !== offset) {
+        throw new AppError('invalid', '改写起点要落在段末，请重新选择。')
+      }
+    }
+
+    let plan: PlotPlan
+    try {
+      plan = planPlot({
+        fromIdx: input.fromIdx,
+        startMode: input.startMode,
+        startOffset: input.startOffset,
+        chapterCount,
+        batchSize: 3
+      })
+    } catch (error) {
+      if (error instanceof PlotPlanError) throw new AppError('invalid', error.message)
+      throw error
+    }
+
+    const affected = await this.queue.cancelProjectWriters(project.id)
+    for (const chapterId of affected) {
+      this.restoreQueuedChapter(chapterId)
+    }
+
+    ensureChapterRange(this.db, project.id, plan.replaceTo)
+    for (const unit of plan.units) {
+      const chapter = getChapterByIndex(this.db, project.id, unit.chapterIdx)
+      if (!chapter) continue
+      await this.queue.cancelKeyAndWait(`summary:${chapter.id}`)
+      await this.queue.cancelKeyAndWait(`check:${chapter.id}`)
+    }
+
+    const reason = `改后续：${direction.slice(0, 40)}`
+    const versions = new Map<number, string | null>()
+    this.db.transaction(() => {
+      for (const idx of plan.archived) {
+        const chapter = getChapterByIndex(this.db, project.id, idx)
+        if (!chapter || !chapter.content.trim()) {
+          versions.set(idx, null)
+          continue
+        }
+        const version = createVersion(
+          this.db,
+          chapter.id,
+          chapter.content,
+          null,
+          reason,
+          chapter.wordCount,
+          chapter.wordCount
+        )
+        pruneVersions(this.db, chapter.id)
+        versions.set(idx, version.id)
+      }
+    })
+
+    deactivatePlotDirectives(this.db, project.id)
+    const directive = createDirective(
+      this.db,
+      project.id,
+      '后续3章',
+      direction,
+      plan.units[0].chapterIdx,
+      {
+        startChapter: plan.directive.starts,
+        expiresChapter: plan.directive.expires,
+        origin: 'plot'
+      }
+    )
+    const stale = markSubsequentStale(
+      this.db,
+      project.id,
+      plan.replaceTo,
+      '前文已按新方向改写，待跟进'
+    )
+
+    const batch: PlotBatchState = {
+      batchId: randomUUID(),
+      projectId: project.id,
+      direction,
+      plan,
+      directiveId: directive.id,
+      nextIndex: 0,
+      stopped: false,
+      chapterIds: new Map(),
+      versions
+    }
+    for (const unit of plan.units) {
+      const chapter = ensureChapter(this.db, project.id, unit.chapterIdx)
+      batch.chapterIds.set(unit.chapterIdx, chapter.id)
+    }
+    this.plotBatches.set(batch.batchId, batch)
+
+    const units: PlotUnitResult[] = plan.units.map((unit, index) => ({
+      idx: unit.chapterIdx,
+      chapterId: batch.chapterIds.get(unit.chapterIdx) ?? '',
+      mode:
+        unit.chapterIdx > chapterCount
+          ? 'created'
+          : input.startMode === 'paragraph' && index === 0
+            ? 'seeded'
+            : 'replaced',
+      versionId: versions.get(unit.chapterIdx) ?? null
+    }))
+
+    touchProject(this.db, project.id)
+    this.emit({ type: 'directives:changed', projectId: project.id })
+    this.emitStaleChanged(project.id, stale)
+    this.emitProjectsChanged()
+    this.emit({
+      type: 'plot:batch',
+      batchId: batch.batchId,
+      projectId: project.id,
+      status: 'running',
+      unitIdx: plan.units[0].chapterIdx
+    })
+
+    try {
+      this.preparePlotUnit(batch, 0)
+    } catch (error) {
+      this.failPlotBatch(
+        batch.batchId,
+        error instanceof Error ? error.message : '无法启动这一批改写。'
+      )
+      throw error
+    }
+
+    return {
+      batchId: batch.batchId,
+      directiveId: directive.id,
+      units,
+      replaceTo: plan.replaceTo,
+      staleFrom: plan.staleFrom
+    }
+  }
+
+  async plotCancel(projectId: string, batchId: string): Promise<void> {
+    const batch = this.plotBatches.get(batchId)
+    if (!batch || batch.projectId !== projectId) {
+      throw new AppError('not_found', '这一批改写已经结束。')
+    }
+    batch.stopped = true
+    const currentIndex = Math.min(Math.max(0, batch.nextIndex - 1), 2)
+    const unit = batch.plan.units[currentIndex]
+    const chapterId = unit ? batch.chapterIds.get(unit.chapterIdx) : undefined
+    if (chapterId) {
+      await this.queue.cancelKeyAndWait(`chapter:${chapterId}`)
+      clearChapterSeed(this.db, chapterId)
+      this.restoreQueuedChapter(chapterId)
+      this.emitChapterChanged(chapterId)
+    }
+    deactivateDirectiveRepo(this.db, projectId, batch.directiveId)
+    this.disposePlotBatch(batch)
+    this.emit({ type: 'directives:changed', projectId })
+    this.emit({
+      type: 'plot:batch',
+      batchId,
+      projectId,
+      status: 'stopped',
+      unitIdx: unit?.chapterIdx ?? 0
+    })
+    this.emitProjectsChanged()
+  }
+
+  private preparePlotUnit(batch: PlotBatchState, index: number): void {
+    const unit = batch.plan.units[index]
+    if (!unit) throw new AppError('invalid', '这一批改写的章节范围不完整。')
+    const chapter = ensureChapter(this.db, batch.projectId, unit.chapterIdx)
+    batch.chapterIds.set(unit.chapterIdx, chapter.id)
+    batch.nextIndex = index + 1
+    this.chapterBatch.set(chapter.id, batch.batchId)
+    clearChapterOutline(this.db, chapter.id)
+
+    if (unit.keepPrefixChars > 0) {
+      const current = requireChapter(this.db, chapter.id)
+      const seed = current.content.slice(0, unit.keepPrefixChars).replace(/\s+$/u, '')
+      if (!seed) {
+        throw new AppError('empty', '保留的开头是空的，请重新选择段落。')
+      }
+      setChapterSeed(this.db, chapter.id, seed)
+      updateChapterOutline(this.db, chapter.id, {
+        title: current.title,
+        goals: ['承接已给出的开头，继续写完本章'],
+        advance: [],
+        forbidden: ['不要重复、改写或总结已给出的开头'],
+        hook: '留下推动下一章的钩子'
+      })
+    }
+
+    this.enqueueChapter(batch.projectId, unit.chapterIdx, {
+      urgent: true,
+      regenerate: true,
+      batchId: batch.batchId,
+      useSeed: unit.keepPrefixChars > 0,
+      skipArchive: true,
+      originalStatus: chapter.status
+    })
+  }
+
+  private advancePlotBatch(batchId: string, chapterId: string): void {
+    const batch = this.plotBatches.get(batchId)
+    if (!batch || batch.stopped) return
+    const completed = batch.plan.units[batch.nextIndex - 1]
+    if (!completed || batch.chapterIds.get(completed.chapterIdx) !== chapterId) return
+    this.chapterBatch.delete(chapterId)
+    if (batch.nextIndex >= batch.plan.units.length) {
+      this.finishPlotBatch(batch)
+      return
+    }
+    try {
+      this.preparePlotUnit(batch, batch.nextIndex)
+    } catch (error) {
+      this.failPlotBatch(
+        batchId,
+        error instanceof Error ? error.message : '下一章没能开始。'
+      )
+    }
+  }
+
+  private finishPlotBatch(batch: PlotBatchState): void {
+    deactivateDirectiveRepo(this.db, batch.projectId, batch.directiveId)
+    this.disposePlotBatch(batch)
+    this.emit({ type: 'directives:changed', projectId: batch.projectId })
+    this.emit({
+      type: 'plot:batch',
+      batchId: batch.batchId,
+      projectId: batch.projectId,
+      status: 'done',
+      unitIdx: batch.plan.replaceTo
+    })
+    this.emitProjectsChanged()
+  }
+
+  private failPlotBatch(batchId: string, message: string): void {
+    const batch = this.plotBatches.get(batchId)
+    if (!batch) return
+    const wasStopped = batch.stopped
+    batch.stopped = true
+    for (const chapterId of batch.chapterIds.values()) {
+      clearChapterSeed(this.db, chapterId)
+    }
+    deactivateDirectiveRepo(this.db, batch.projectId, batch.directiveId)
+    this.disposePlotBatch(batch)
+    this.emit({ type: 'directives:changed', projectId: batch.projectId })
+    if (!wasStopped) {
+      this.emit({
+        type: 'plot:batch',
+        batchId,
+        projectId: batch.projectId,
+        status: 'failed',
+        unitIdx: batch.plan.units[Math.min(batch.nextIndex - 1, 2)]?.chapterIdx ?? 0,
+        message: message.slice(0, 120)
+      })
+    }
+    this.emitProjectsChanged()
+  }
+
+  private disposePlotBatch(batch: PlotBatchState): void {
+    this.plotBatches.delete(batch.batchId)
+    for (const chapterId of batch.chapterIds.values()) {
+      if (this.chapterBatch.get(chapterId) === batch.batchId) {
+        this.chapterBatch.delete(chapterId)
+      }
+    }
+  }
+
+  private restoreQueuedChapter(chapterId: string): void {
+    const chapter = getChapterById(this.db, chapterId)
+    if (!chapter || chapter.status !== 'queued') return
+    updateChapterStatus(this.db, chapterId, chapter.content ? 'final' : 'outline')
+    this.emitChapterChanged(chapterId)
   }
 
   /* ---------------------------------------------------------------- */
@@ -1211,7 +1721,15 @@ export class StoryEngine {
   }
 
   private usableChunks(chapterId: string): Chunk[] {
-    return listChunks(this.db, chapterId).filter((chunk) => chunk.text.trim().length >= 4)
+    let chunks = listChunks(this.db, chapterId)
+    if (chunks.length === 0) {
+      const chapter = getChapterById(this.db, chapterId)
+      if (chapter && chapter.content.trim()) {
+        this.rebuildChunks(chapter)
+        chunks = listChunks(this.db, chapterId)
+      }
+    }
+    return chunks.filter((chunk) => chunk.text.trim().length >= 4)
   }
 
   /* ---------------------------------------------------------------- */
@@ -1298,7 +1816,7 @@ export class StoryEngine {
     const chapter = getChapterById(this.db, chapterId)
     this.queue.cancelChapter(chapterId)
     if (chapter && chapter.status === 'queued') {
-      updateChapterStatus(this.db, chapterId, 'outline')
+      updateChapterStatus(this.db, chapterId, chapter.content ? 'final' : 'outline')
       this.emitChapterChanged(chapterId)
     }
   }

@@ -1,4 +1,5 @@
 import type { ReaderFont, ThemeName } from './tokens'
+import type { ParsedBook } from './import/types'
 
 /* ------------------------------------------------------------------ */
 /* Domain                                                              */
@@ -13,6 +14,10 @@ export type ChapterStatus =
   | 'stale'
 
 export type RoleTag = '对话' | '动作' | '描写' | '心理' | '转折' | '信息'
+
+export type ProjectSource = 'generated' | 'imported'
+
+export type BookReadStatus = 'none' | 'want' | 'reading' | 'done' | 'dropped'
 
 export interface Project {
   id: string
@@ -33,12 +38,25 @@ export interface Project {
   buffer: number
   chapterMin: number
   chapterMax: number
+  source: ProjectSource
+  importedAt: number | null
+  originalFile: string
+  author: string
+  series: string
+  publisher: string
+  language: string
+  description: string
+  tags: string[]
+  rating: number
+  readStatus: BookReadStatus
+  coverData: string
 }
 
 export interface ProjectBrief {
   id: string
   title: string
   genre: string
+  source: ProjectSource
   chapterCount: number
   readChapter: number
   wordCount: number
@@ -46,6 +64,13 @@ export interface ProjectBrief {
   createdAt: number
   coverIndex: number
   hasPartial: boolean
+  author: string
+  series: string
+  tags: string[]
+  rating: number
+  readStatus: BookReadStatus
+  coverData: string
+  lastOffsetRatio: number
 }
 
 export interface ChapterOutline {
@@ -69,6 +94,9 @@ export interface Chapter {
   title: string
   status: ChapterStatus
   content: string
+  html: string
+  volume: string
+  level: number
   wordCount: number
   summaryL1: string
   summaryL2: string
@@ -79,6 +107,7 @@ export interface Chapter {
   error: string
   issues: ConsistencyIssue[]
   updatedAt: number
+  lastOffsetRatio: number
 }
 
 export interface ChapterMeta {
@@ -93,6 +122,9 @@ export interface ChapterMeta {
   staleReason: string
   error: string
   updatedAt: number
+  volume: string
+  level: number
+  lastOffsetRatio: number
 }
 
 export interface Chunk {
@@ -135,6 +167,7 @@ export interface ForeshadowItem {
 
 export type DirectiveScope = '本章' | '后续3章' | '本卷' | '全书'
 export type DirectiveStatus = 'pending' | 'applied' | 'expired'
+export type DirectiveOrigin = 'user' | 'plot'
 
 export interface Directive {
   id: string
@@ -145,6 +178,8 @@ export interface Directive {
   createdAt: number
   appliedChapter: number | null
   expiresChapter: number | null
+  startsChapter: number | null
+  origin: DirectiveOrigin
 }
 
 export interface VersionDiffEdit {
@@ -249,6 +284,314 @@ export interface SetupDraft {
 }
 
 /* ------------------------------------------------------------------ */
+/* Import and plot continuation                                        */
+/* ------------------------------------------------------------------ */
+
+export interface ImportBookInput {
+  title: string
+  genre: string
+  tone: string
+  pov: string
+  styleSample: string
+  styleGuide: string
+  targetLenPerChapter: number
+  sourceFile: string
+  author?: string
+  series?: string
+  publisher?: string
+  language?: string
+  description?: string
+  tags?: string[]
+  coverData?: string
+  chapters: {
+    title: string
+    content: string
+    html?: string
+    volume?: string
+    level?: number
+  }[]
+}
+
+export type PlotStartMode = 'after' | 'include' | 'paragraph'
+
+export interface PlotBeatsInput {
+  projectId: string
+  fromIdx: number
+  startMode: PlotStartMode
+  startOffset: number | null
+}
+
+export interface PlotRewriteInput extends PlotBeatsInput {
+  direction: string
+  batchSize: 3
+}
+
+export interface PlotUnitResult {
+  idx: number
+  chapterId: string
+  mode: 'replaced' | 'created' | 'seeded'
+  versionId: string | null
+}
+
+export interface PlotRewriteResult {
+  batchId: string
+  directiveId: string
+  units: PlotUnitResult[]
+  replaceTo: number
+  staleFrom: number
+}
+
+export type PlotBatchStatus = 'running' | 'done' | 'stopped' | 'failed'
+
+/* ------------------------------------------------------------------ */
+/* Reading workspace                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface Bookmark {
+  id: string
+  projectId: string
+  chapterId: string
+  chapterIdx: number
+  ratio: number
+  label: string
+  excerpt: string
+  createdAt: number
+}
+
+export interface BookmarkInput {
+  projectId: string
+  chapterId: string
+  chapterIdx: number
+  ratio: number
+  label: string
+  excerpt: string
+}
+
+export interface SearchInput {
+  projectId?: string | null
+  query: string
+  limit?: number
+  beforeIdx?: number | null
+}
+
+export interface SearchHit {
+  projectId: string
+  projectTitle: string
+  chapterId: string
+  chapterIdx: number
+  chapterTitle: string
+  snippet: string
+  matchOffset: number
+  score: number
+}
+
+export interface SearchResult {
+  hits: SearchHit[]
+  total: number
+  tookMs: number
+  truncated: boolean
+}
+
+export interface ReadingDay {
+  day: string
+  seconds: number
+  words: number
+}
+
+export interface ReadingStats {
+  totalSeconds: number
+  todaySeconds: number
+  streakDays: number
+  totalWords: number
+  days: ReadingDay[]
+  bookSeconds: Array<{ projectId: string; title: string; seconds: number }>
+}
+
+export interface ReadingRecordInput {
+  projectId: string
+  seconds: number
+  words: number
+}
+
+export interface Shelf {
+  id: string
+  name: string
+  createdAt: number
+  projectIds: string[]
+}
+
+export interface ProjectMetadataPatch {
+  title?: string
+  author?: string
+  series?: string
+  publisher?: string
+  language?: string
+  description?: string
+  tags?: string[]
+  rating?: number
+  readStatus?: BookReadStatus
+  coverData?: string
+}
+
+export interface ProjectListFilter {
+  query?: string
+  readStatus?: BookReadStatus | 'all'
+  source?: ProjectSource | 'all'
+  shelfId?: string | null
+  sort?: 'recent' | 'title' | 'author' | 'created'
+}
+
+export interface QaSource {
+  chapterIdx: number
+  chapterTitle: string
+  excerpt: string
+}
+
+export interface QaAskInput {
+  projectId: string
+  chapterIdx: number
+  question: string
+  selection?: string
+  allowSpoilers?: boolean
+}
+
+export interface QaAnswer {
+  answer: string
+  sources: QaSource[]
+}
+
+export interface TimelineEvent {
+  id: string
+  projectId: string
+  chapterIdx: number
+  storyTime: string
+  title: string
+  detail: string
+  characters: string[]
+  createdAt: number
+}
+
+export interface KnowledgeFact {
+  id: string
+  projectId: string
+  chapterIdx: number
+  character: string
+  fact: string
+  createdAt: number
+}
+
+export type AnalysisIssueType =
+  | 'timeline'
+  | 'name'
+  | 'ability'
+  | 'foreshadow'
+  | 'pov'
+  | 'logic'
+
+export interface AnalysisIssue {
+  id: string
+  projectId: string
+  chapterIdx: number
+  type: AnalysisIssueType
+  detail: string
+  quote: string
+  status: 'open' | 'ignored'
+  createdAt: number
+}
+
+export interface AnalysisForeshadow {
+  id: string
+  projectId: string
+  plantedChapter: number
+  payoffChapter: number | null
+  text: string
+  status: 'open' | 'paid' | 'ignored'
+  createdAt: number
+}
+
+export interface AnalysisBundle {
+  projectId: string
+  events: TimelineEvent[]
+  knowledge: KnowledgeFact[]
+  issues: AnalysisIssue[]
+  foreshadows: AnalysisForeshadow[]
+  analyzedChapters: number[]
+  updatedAt: number
+}
+
+export interface AnalyzeChapterInput {
+  projectId: string
+  chapterIdx: number
+}
+
+export interface AnalyzeBookInput {
+  projectId: string
+  sampleSize?: number
+}
+
+export interface AnalyzeResult {
+  analyzed: number[]
+  events: number
+  knowledge: number
+  issues: number
+  foreshadows: number
+  skipped: number
+}
+
+export interface SyncConfig {
+  url: string
+  username: string
+  password: string
+  path: string
+}
+
+export interface SyncStatus {
+  configured: boolean
+  lastSyncAt: number | null
+  lastMessage: string
+}
+
+export interface SyncResult {
+  pulledProjects: number
+  pushedProjects: number
+  skippedProjects: number
+  message: string
+}
+
+/* ------------------------------------------------------------------ */
+/* Remote sources and export                                           */
+/* ------------------------------------------------------------------ */
+
+export type ExportFormat = 'txt' | 'md' | 'epub' | 'docx' | 'pdf'
+
+export interface RemoteBook {
+  name: string
+  book: ParsedBook
+}
+
+export interface OpdsEntry {
+  id: string
+  title: string
+  author: string
+  summary: string
+  contentUrl: string
+  coverUrl: string
+  format: string
+}
+
+export interface OpdsFeed {
+  title: string
+  url: string
+  entries: OpdsEntry[]
+  nextUrl: string | null
+}
+
+export interface ImportUrlInput {
+  url: string
+  name?: string
+}
+
+/* ------------------------------------------------------------------ */
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -272,6 +615,19 @@ export interface AppSettings {
   openLastOnLaunch: boolean
   lastProjectId: string | null
   lastView: 'library' | 'reader'
+  pageMode: 'scroll' | 'paged'
+  lineHeight: number
+  letterSpacing: number
+  paragraphGap: number
+  pageWidth: number
+  justify: boolean
+  brightness: number
+  vertical: boolean
+  convert: 'none' | 's2t' | 't2s'
+  syncUrl: string
+  syncUser: string
+  syncPassword: string
+  syncPath: string
 }
 
 export interface UsageSummary {
@@ -386,7 +742,13 @@ export type AppEvent =
       text: string
       chars: number
     }
-  | { type: 'chapter:reset'; chapterId: string; projectId: string; idx: number }
+  | {
+      type: 'chapter:reset'
+      chapterId: string
+      projectId: string
+      idx: number
+      base?: string
+    }
   | { type: 'chapter:changed'; chapter: ChapterMeta }
   | { type: 'chapter:content'; chapter: ChapterMeta; content: string }
   | { type: 'chapter:removed'; projectId: string; idx: number }
@@ -396,6 +758,16 @@ export type AppEvent =
   | { type: 'jobs:changed'; jobs: JobInfo[] }
   | { type: 'notice'; tone: 'info' | 'error'; message: string }
   | { type: 'usage:changed'; usage: UsageSummary }
+  | {
+      type: 'plot:batch'
+      batchId: string
+      projectId: string
+      status: PlotBatchStatus
+      unitIdx: number
+      message?: string
+    }
+  | { type: 'analysis:changed'; projectId: string }
+  | { type: 'shelves:changed' }
 
 export type ApiResult<T> =
   | { ok: true; data: T }

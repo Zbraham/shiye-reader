@@ -6,7 +6,7 @@ import type {
 } from './types'
 
 export const APP_NAME = '拾页'
-export const APP_VERSION = '1.0.0'
+export const APP_VERSION = '1.2.0'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: 'builtin',
@@ -25,7 +25,20 @@ export const DEFAULT_SETTINGS: AppSettings = {
   consistencyCheck: true,
   openLastOnLaunch: true,
   lastProjectId: null,
-  lastView: 'library'
+  lastView: 'library',
+  pageMode: 'scroll',
+  lineHeight: 1.95,
+  letterSpacing: 0,
+  paragraphGap: 0.75,
+  pageWidth: 720,
+  justify: false,
+  brightness: 1,
+  vertical: false,
+  convert: 'none',
+  syncUrl: '',
+  syncUser: '',
+  syncPassword: '',
+  syncPath: 'shiye-backup.json'
 }
 
 export const SETTINGS_LIMITS = {
@@ -41,8 +54,18 @@ export const SETTINGS_LIMITS = {
   temperatureMax: 1.5,
   instructionMax: 2000,
   styleSampleMax: 1200,
-  chaptersMax: 300,
-  rewriteTargetsMax: 10
+  chaptersMax: 2000,
+  rewriteTargetsMax: 10,
+  lineHeightMin: 1.4,
+  lineHeightMax: 2.6,
+  letterSpacingMax: 3,
+  paragraphGapMax: 2,
+  pageWidthMin: 520,
+  pageWidthMax: 1100,
+  fontFamilyMax: 80,
+  searchLimitMax: 120,
+  qaQuestionMax: 600,
+  analysisSampleMax: 30
 } as const
 
 export const STATUS_LABEL: Record<ChapterStatus, string> = {
@@ -65,7 +88,7 @@ export const STATUS_ORDER: ChapterStatus[] = [
 
 const TRANSITIONS: Record<ChapterStatus, ChapterStatus[]> = {
   outline: ['queued', 'draft'],
-  queued: ['generating', 'draft', 'outline'],
+  queued: ['generating', 'draft', 'outline', 'final', 'stale'],
   generating: ['draft', 'final', 'queued'],
   draft: ['queued', 'generating', 'final', 'stale'],
   final: ['stale', 'queued', 'draft'],

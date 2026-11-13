@@ -314,6 +314,10 @@ export class RemoteWriter implements Writer {
     return result
   }
 
+  async complete(system: string, user: string, signal: AbortSignal): Promise<string> {
+    return this.text(system, user, signal, 0.3)
+  }
+
   async streamChapter(
     input: ChapterWriteInput,
     onDelta: (text: string) => void,

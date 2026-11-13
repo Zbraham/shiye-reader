@@ -7,6 +7,7 @@ import type {
   TestModelResult
 } from '@shared/types'
 import { countWords, excerpt, hashText } from '@shared/text'
+import { AppError } from '../errors'
 import type {
   BeatsTaskInput,
   ChapterSummary,
@@ -838,6 +839,13 @@ function applyManual(input: ManualRewriteTaskInput): string {
 
 export class BuiltinWriter implements Writer {
   readonly mode = 'builtin' as const
+
+  async complete(_system: string, _user: string, _signal: AbortSignal): Promise<string> {
+    throw new AppError(
+      'builtin_unsupported',
+      '内置引擎不做全书分析。请先在设置里接入兼容接口的模型。'
+    )
+  }
 
   async streamChapter(
     input: ChapterWriteInput,

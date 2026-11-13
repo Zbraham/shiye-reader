@@ -100,6 +100,8 @@ export interface CheckTaskInput {
 
 export interface Writer {
   readonly mode: 'builtin' | 'openai'
+  /** Free-form completion used by reader Q&A and book analysis. */
+  complete(system: string, user: string, signal: AbortSignal): Promise<string>
   streamChapter(
     input: ChapterWriteInput,
     onDelta: (text: string) => void,

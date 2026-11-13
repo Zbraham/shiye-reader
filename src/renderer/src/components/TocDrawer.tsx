@@ -56,19 +56,35 @@ export function TocDrawer({
         </button>
       </div>
       <div className="toc-list">
-        {chapters.map((chapter) => (
-          <button
-            key={chapter.id}
-            className="toc-item"
-            data-current={chapter.idx === currentIdx}
-            onClick={() => onPick(chapter.idx)}
-            title={`${STATUS_LABEL[chapter.status]} · ${chapter.wordCount} 字`}
-          >
-            <span className="toc-idx">{String(chapter.idx).padStart(2, '0')}</span>
-            <span className="toc-label">{labelOf(chapter)}</span>
-            <span className="status-dot" data-status={chapter.status} />
-          </button>
-        ))}
+        {chapters.map((chapter, index) => {
+          const previous = chapters[index - 1]
+          const showVolume =
+            Boolean(chapter.volume) && chapter.volume !== previous?.volume
+          return (
+            <div className="toc-entry" key={chapter.id}>
+              {showVolume ? (
+                <button
+                  className="toc-volume"
+                  onClick={() => onPick(chapter.idx)}
+                  title={chapter.volume}
+                >
+                  {chapter.volume}
+                </button>
+              ) : null}
+              <button
+                className="toc-item"
+                data-current={chapter.idx === currentIdx}
+                data-level={chapter.level > 1 ? 'sub' : 'main'}
+                onClick={() => onPick(chapter.idx)}
+                title={`${STATUS_LABEL[chapter.status]} · ${chapter.wordCount} 字`}
+              >
+                <span className="toc-idx">{String(chapter.idx).padStart(2, '0')}</span>
+                <span className="toc-label">{labelOf(chapter)}</span>
+                <span className="status-dot" data-status={chapter.status} />
+              </button>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

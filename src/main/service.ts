@@ -1,34 +1,59 @@
 import { z } from 'zod'
 import type {
+  AnalysisBundle,
+  AnalyzeResult,
   ApiResult,
   AppEvent,
   AppSettings,
   ApplyRewriteResult,
   BeatsResult,
+  Bookmark,
   BootstrapData,
   Chapter,
   ChapterMeta,
   Directive,
   DirectiveScope,
+  ExportFormat,
   ExportResult,
+  ImportBookInput,
   ManualRewriteInput,
+  OpdsFeed,
+  PlotRewriteInput,
+  PlotRewriteResult,
   Project,
   ProjectBrief,
+  QaAnswer,
   ReaderData,
+  ReadingStats,
+  RemoteBook,
   RewritePreview,
+  SearchResult,
   SelectTargetsResult,
+  Shelf,
   StorySkeleton,
+  SyncResult,
+  SyncStatus,
   TestModelResult,
   UsageSummary,
   VersionDetail,
   VersionMeta
 } from '@shared/types'
+import {
+  buildExportFile,
+  buildExportText as buildSharedExportText,
+  exportExtension,
+  sanitizeFileName
+} from '@shared/export'
 import { APP_VERSION, InvalidTransitionError } from '@shared/constants'
 import { countWords } from '@shared/text'
 import {
+  AnalyzeBookSchema,
+  AnalyzeChapterSchema,
   AppSettingsSchema,
   ApplyRewriteSchema,
   BeatsSchema,
+  BookmarkAddSchema,
+  BookmarkRemoveSchema,
   ChapterDeleteSchema,
   ChapterIdSchema,
   CreateProjectSchema,
@@ -37,15 +62,33 @@ import {
   EnqueueChapterSchema,
   ExportSchema,
   FixIssuesSchema,
+  ForeshadowStatusSchema,
+  ImportBookSchema,
+  ImportUrlSchema,
+  IssueStatusSchema,
   ManualRewriteSchema,
+  OpdsUrlSchema,
+  PlotBeatsSchema,
+  PlotCancelSchema,
+  PlotRewriteSchema,
+  ProjectBatchDeleteSchema,
   ProjectIdOnlySchema,
   ProjectIdSchema,
+  ProjectMetaSchema,
   ProjectUpdateSchema,
+  QaAskSchema,
   ReadCursorSchema,
   ReaderEnterSchema,
+  ReadingRecordSchema,
+  ReadingStatsSchema,
   RewritePreviewSchema,
   RewriteSelectSchema,
+  SearchSchema,
   SetupDraftSchema,
+  ShelfBooksSchema,
+  ShelfCreateSchema,
+  ShelfDeleteSchema,
+  ShelfRenameSchema,
   StaleActionSchema,
   TestModelSchema,
   UpdateOutlineSchema,
@@ -72,6 +115,32 @@ import {
   saveSettings as persistSettings,
   usageSummary
 } from './db/repo'
+import {
+  addBookmark,
+  addToShelf,
+  createShelf,
+  deleteProjects,
+  deleteShelf,
+  findDuplicateProjects,
+  listBookmarks,
+  listShelves,
+  readingStats,
+  recordReading,
+  removeBookmark,
+  removeFromShelf,
+  renameShelf,
+  searchChapters,
+  updateProjectMetadata
+} from './db/reading'
+import {
+  clearAnalysis,
+  getAnalysis,
+  setForeshadowStatus,
+  setIssueStatus
+} from './db/analysis'
+import { createInsights } from './insights'
+import { syncStatus as readSyncStatus, runWebdavSync } from './sync/webdav'
+import { browseOpds, fetchRemoteBook, importFromOpds } from './remote-books'
 
 export interface ExportChapter {
   idx: number
@@ -81,12 +150,28 @@ export interface ExportChapter {
 
 export interface ExportPayload {
   title: string
+  author?: string
+  language?: string
+  publisher?: string
+  series?: string
+  description?: string
+  tags?: string[]
   genre: string
   tone: string
   pov: string
   synopsis: string
-  format: 'txt' | 'md'
+  coverData?: string
+  format: ExportFormat
   chapters: ExportChapter[]
+}
+
+export interface ExportArtifact {
+  fileName: string
+  mime: string
+  bytes: Uint8Array
+  format: ExportFormat
+  /** Only for desktop PDF rendering. */
+  html?: string
 }
 
 export interface ServiceDeps {
@@ -99,7 +184,7 @@ export interface ServiceDeps {
   takeNotices: () => string[]
   broadcast: (event: AppEvent) => void
   /** Creates the file and returns its human-readable path. */
-  writeExport: (payload: ExportPayload) => Promise<{ path: string }>
+  writeExport: (artifact: ExportArtifact) => Promise<{ path: string }>
   openDataFolder: () => Promise<null>
 }
 
@@ -124,6 +209,12 @@ function readerData(db: DatabaseHandle, engine: StoryEngine, projectId: string):
 export function createService(deps: ServiceDeps): Record<ChannelName, ApiHandler> {
   const { engine, db } = deps
   const handlers = {} as Record<ChannelName, ApiHandler>
+  const insights = createInsights({
+    db,
+    writerMode: () => engine.writerMode,
+    complete: (system, user, signal) => engine.complete(system, user, signal),
+    emitAnalysisChanged: (projectId) => deps.broadcast({ type: 'analysis:changed', projectId })
+  })
 
   const handle = <S extends z.ZodTypeAny, T>(
     channel: ChannelName,
@@ -190,10 +281,61 @@ export function createService(deps: ServiceDeps): Record<ChannelName, ApiHandler
     return project
   })
 
+  handle(CHANNELS.bookImport, ImportBookSchema, (input): Project => {
+    const project = engine.importBook(input as ImportBookInput)
+    const settings = persistSettings(db, {
+      lastProjectId: project.id,
+      lastView: 'reader'
+    })
+    deps.setSettings(settings)
+    return project
+  })
+
+  handle(CHANNELS.bookImportUrl, ImportUrlSchema, async (input): Promise<RemoteBook> => {
+    return fetchRemoteBook(input.url, input.name)
+  })
+
+  handle(CHANNELS.bookImportRemote, ImportUrlSchema, async (input): Promise<RemoteBook> => {
+    return importFromOpds(input.url)
+  })
+
+  handle(CHANNELS.opdsBrowse, OpdsUrlSchema, async (input): Promise<OpdsFeed> => {
+    return browseOpds(input.url)
+  })
+
   handle(CHANNELS.projectUpdate, ProjectUpdateSchema, (input): Project => {
     const { projectId, ...patch } = input
     return engine.updateBookProject(projectId, patch)
   })
+
+  handle(CHANNELS.projectMeta, ProjectMetaSchema, (input): Project => {
+    const { projectId, ...patch } = input
+    const project = updateProjectMetadata(db, projectId, patch)
+    deps.broadcast({ type: 'project:changed', project })
+    deps.broadcast({ type: 'projects:changed' })
+    return project
+  })
+
+  handle(CHANNELS.projectBatchDelete, ProjectBatchDeleteSchema, async (input): Promise<null> => {
+    for (const projectId of input.projectIds) {
+      try {
+        await engine.deleteBook(projectId)
+      } catch {
+        // Keep deleting the rest even if one book is already gone.
+      }
+    }
+    deleteProjects(db, input.projectIds)
+    const settings = deps.getSettings()
+    if (settings.lastProjectId && input.projectIds.includes(settings.lastProjectId)) {
+      deps.setSettings(persistSettings(db, { lastProjectId: null, lastView: 'library' }))
+    }
+    deps.broadcast({ type: 'projects:changed' })
+    return null
+  })
+
+  handle(CHANNELS.projectDuplicates, z.undefined(), (): Record<string, string[]> =>
+    findDuplicateProjects(db)
+  )
 
   handle(CHANNELS.projectDelete, ProjectIdOnlySchema, async (input): Promise<null> => {
     await engine.deleteBook(input.projectId)
@@ -293,6 +435,19 @@ export function createService(deps: ServiceDeps): Record<ChannelName, ApiHandler
     engine.beats(input.projectId, input.chapterIdx)
   )
 
+  handle(CHANNELS.plotBeats, PlotBeatsSchema, (input): Promise<BeatsResult> =>
+    engine.plotBeats(input)
+  )
+
+  handle(CHANNELS.plotRewrite, PlotRewriteSchema, (input): Promise<PlotRewriteResult> =>
+    engine.plotRewrite(input as PlotRewriteInput)
+  )
+
+  handle(CHANNELS.plotCancel, PlotCancelSchema, async (input): Promise<null> => {
+    await engine.plotCancel(input.projectId, input.batchId)
+    return null
+  })
+
   handle(CHANNELS.rewriteSelect, RewriteSelectSchema, (input): Promise<SelectTargetsResult> =>
     engine.selectTargets(input.chapterId, input.instruction)
   )
@@ -340,6 +495,125 @@ export function createService(deps: ServiceDeps): Record<ChannelName, ApiHandler
 
   handle(CHANNELS.usageGet, z.undefined(), (): UsageSummary => usageSummary(db))
 
+  handle(CHANNELS.search, SearchSchema, (input): SearchResult =>
+    searchChapters(db, {
+      projectId: input.projectId ?? null,
+      query: input.query,
+      limit: input.limit,
+      beforeIdx: input.beforeIdx ?? null
+    })
+  )
+
+  handle(CHANNELS.bookmarkList, ProjectIdOnlySchema, (input): Bookmark[] =>
+    listBookmarks(db, input.projectId)
+  )
+
+  handle(CHANNELS.bookmarkAdd, BookmarkAddSchema, (input): Bookmark => {
+    const bookmark = addBookmark(db, input)
+    deps.broadcast({ type: 'project:changed', project: requireProject(db, input.projectId) })
+    return bookmark
+  })
+
+  handle(CHANNELS.bookmarkRemove, BookmarkRemoveSchema, (input): null => {
+    removeBookmark(db, input.bookmarkId)
+    return null
+  })
+
+  handle(CHANNELS.readingRecord, ReadingRecordSchema, (input): null => {
+    recordReading(db, input.projectId, input.seconds, input.words)
+    return null
+  })
+
+  handle(CHANNELS.readingStats, ReadingStatsSchema, (input): ReadingStats =>
+    readingStats(db, input.projectId ?? null)
+  )
+
+  handle(CHANNELS.shelfList, z.undefined(), (): Shelf[] => listShelves(db))
+
+  const shelfChanged = (): void => deps.broadcast({ type: 'shelves:changed' })
+
+  handle(CHANNELS.shelfCreate, ShelfCreateSchema, (input): Shelf => {
+    const shelf = createShelf(db, input.name)
+    shelfChanged()
+    return shelf
+  })
+
+  handle(CHANNELS.shelfRename, ShelfRenameSchema, (input): Shelf => {
+    const shelf = renameShelf(db, input.shelfId, input.name)
+    shelfChanged()
+    return shelf
+  })
+
+  handle(CHANNELS.shelfDelete, ShelfDeleteSchema, (input): null => {
+    deleteShelf(db, input.shelfId)
+    shelfChanged()
+    return null
+  })
+
+  handle(CHANNELS.shelfAdd, ShelfBooksSchema, (input): null => {
+    addToShelf(db, input.shelfId, input.projectIds)
+    shelfChanged()
+    return null
+  })
+
+  handle(CHANNELS.shelfRemove, ShelfBooksSchema, (input): null => {
+    removeFromShelf(db, input.shelfId, input.projectIds)
+    shelfChanged()
+    return null
+  })
+
+  handle(CHANNELS.qaAsk, QaAskSchema, (input): Promise<QaAnswer> =>
+    insights.askQuestion(input)
+  )
+
+  handle(CHANNELS.analysisGet, ProjectIdOnlySchema, (input): AnalysisBundle =>
+    getAnalysis(db, input.projectId)
+  )
+
+  handle(CHANNELS.analysisChapter, AnalyzeChapterSchema, (input): Promise<AnalyzeResult> =>
+    insights.analyzeChapter(input.projectId, input.chapterIdx)
+  )
+
+  handle(CHANNELS.analysisBook, AnalyzeBookSchema, (input): Promise<AnalyzeResult> =>
+    insights.analyzeBook(input.projectId, input.sampleSize)
+  )
+
+  handle(CHANNELS.analysisIssue, IssueStatusSchema, (input): null => {
+    setIssueStatus(db, input.issueId, input.status)
+    return null
+  })
+
+  handle(CHANNELS.analysisForeshadow, ForeshadowStatusSchema, (input): null => {
+    setForeshadowStatus(db, input.foreshadowId, input.status)
+    return null
+  })
+
+  handle(CHANNELS.analysisClear, ProjectIdOnlySchema, (input): null => {
+    clearAnalysis(db, input.projectId)
+    deps.broadcast({ type: 'analysis:changed', projectId: input.projectId })
+    return null
+  })
+
+  handle(CHANNELS.syncStatus, z.undefined(), (): SyncStatus => {
+    const settings = deps.getSettings()
+    return readSyncStatus(db, {
+      url: settings.syncUrl,
+      username: settings.syncUser,
+      password: settings.syncPassword,
+      path: settings.syncPath
+    })
+  })
+
+  handle(CHANNELS.syncRun, z.undefined(), async (): Promise<SyncResult> => {
+    const settings = deps.getSettings()
+    return runWebdavSync(db, {
+      url: settings.syncUrl,
+      username: settings.syncUser,
+      password: settings.syncPassword,
+      path: settings.syncPath
+    })
+  })
+
   handle(CHANNELS.exportBook, ExportSchema, async (input): Promise<ExportResult> => {
     const project = requireProject(db, input.projectId)
     const chapters = chapterContents(db, project.id).filter(
@@ -350,10 +624,17 @@ export function createService(deps: ServiceDeps): Record<ChannelName, ApiHandler
     }
     const payload: ExportPayload = {
       title: project.title,
+      author: project.author,
+      language: project.language,
+      publisher: project.publisher,
+      series: project.series,
+      description: project.description,
+      tags: project.tags,
       genre: project.genre,
       tone: project.tone,
       pov: project.pov,
       synopsis: project.synopsis,
+      coverData: project.coverData,
       format: input.format,
       chapters: chapters.map((chapter) => ({
         idx: chapter.idx,
@@ -361,7 +642,21 @@ export function createService(deps: ServiceDeps): Record<ChannelName, ApiHandler
         content: chapter.content
       }))
     }
-    const result = await deps.writeExport(payload)
+
+    let artifact: ExportArtifact
+    if (input.format === 'pdf') {
+      artifact = {
+        fileName: `${sanitizeFileName(payload.title)}.pdf`,
+        mime: 'application/pdf',
+        bytes: new Uint8Array(),
+        format: 'pdf',
+        html: buildPrintHtml(payload)
+      }
+    } else {
+      const file = await buildExportFile(payload, input.format)
+      artifact = { ...file, format: input.format }
+    }
+    const result = await deps.writeExport(artifact)
     const words = chapters.reduce(
       (total, chapter) => total + countWords(chapter.content),
       0
@@ -374,49 +669,45 @@ export function createService(deps: ServiceDeps): Record<ChannelName, ApiHandler
   return handlers
 }
 
-/**
- * Builds the plain-text or markdown body for an export. Shared by the desktop
- * file writer and the Android share-sheet writer so both produce identical
- * files.
- */
-export function buildExportText(payload: ExportPayload): string {
-  if (payload.format === 'md') {
-    const lines: string[] = [`# ${payload.title}`, '']
-    lines.push(`> ${payload.genre} · ${payload.tone} · ${payload.pov}`, '')
-    if (payload.synopsis.trim()) lines.push(payload.synopsis.trim(), '')
-    for (const chapter of payload.chapters) {
-      lines.push(
-        `## 第 ${chapter.idx} 章 ${chapter.title.replace(/^第\s*\d+\s*章\s*/u, '')}`,
-        ''
-      )
-      lines.push(
-        chapter.content
-          .split(/\n{2,}/)
-          .map((paragraph) => paragraph.trim())
-          .filter(Boolean)
-          .join('\n\n')
-      )
-      lines.push('')
-    }
-    return lines.join('\n')
-  }
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;')
+}
 
-  const lines: string[] = [`《${payload.title}》`, '']
-  if (payload.synopsis.trim()) lines.push(payload.synopsis.trim(), '')
-  for (const chapter of payload.chapters) {
-    lines.push(
-      `第 ${chapter.idx} 章　${chapter.title.replace(/^第\s*\d+\s*章\s*/u, '')}`,
-      ''
+/** Simple print layout used by the desktop PDF exporter. */
+export function buildPrintHtml(payload: ExportPayload): string {
+  const chapters = payload.chapters
+    .map(
+      (chapter) =>
+        `<section><h2>第 ${chapter.idx} 章 ${escapeHtml(
+          chapter.title.replace(/^第\s*\d+\s*章\s*/u, '')
+        )}</h2>${chapter.content
+          .split(/\n{2,}/u)
+          .map((paragraph) => `<p>${escapeHtml(paragraph.trim())}</p>`)
+          .filter((line) => line !== '<p></p>')
+          .join('')}</section>`
     )
-    lines.push(chapter.content.trim(), '')
-  }
-  return lines.join('\n')
+    .join('')
+  return `<!doctype html><html lang="${escapeHtml(
+    payload.language || 'zh-CN'
+  )}"><head><meta charset="utf-8"><title>${escapeHtml(payload.title)}</title><style>
+  @page { size: A4; margin: 22mm 20mm; }
+  body { font-family: "Source Han Serif SC", "Noto Serif SC", SimSun, serif; font-size: 11.5pt; line-height: 1.9; color: #222; }
+  h1 { font-size: 24pt; text-align: center; margin: 40vh 0 8mm; font-weight: 600; }
+  h2 { font-size: 15pt; margin: 10mm 0 4mm; page-break-after: avoid; }
+  p { text-indent: 2em; margin: 0 0 0.55em; text-align: justify; }
+  .meta { text-align: center; color: #666; margin-bottom: 12mm; }
+  section { page-break-before: always; }
+  </style></head><body><h1>${escapeHtml(payload.title)}</h1><div class="meta">${escapeHtml(
+    [payload.author, payload.genre, payload.tone].filter(Boolean).join(' · ')
+  )}</div>${chapters}</body></html>`
 }
 
-export function sanitizeFileName(title: string): string {
-  return title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || '未命名'
+export function buildExportText(payload: ExportPayload): string {
+  return buildSharedExportText(payload, payload.format === 'md' ? 'md' : 'txt')
 }
 
-export function exportExtension(format: 'txt' | 'md'): string {
-  return format === 'md' ? 'md' : 'txt'
-}
+export { exportExtension, sanitizeFileName }

@@ -331,13 +331,24 @@ await tap(195, 420)
 await new Promise((resolve) => setTimeout(resolve, 250))
 check(
   await evaluate(`(() => {
-    const buttons = [...document.querySelectorAll('.reader-topbar .icon-btn')];
-    const target = buttons[buttons.length - 1];
+    const target = [...document.querySelectorAll('.reader-topbar .icon-btn')]
+      .find((button) => button.getAttribute('aria-label') === '更多');
     if (!target) return false;
     target.click();
     return true;
   })()`),
-  'open settings from the top bar'
+  'open the more menu from the top bar'
+)
+await waitFor(`Boolean(document.querySelector('.topbar-menu'))`, 'top bar menu')
+check(
+  await evaluate(`(() => {
+    const target = [...document.querySelectorAll('.topbar-menu button')]
+      .find((button) => button.textContent.includes('应用设置'));
+    if (!target) return false;
+    target.click();
+    return true;
+  })()`),
+  'open settings from the more menu'
 )
 await waitFor(`Boolean(document.querySelector('.dialog'))`, 'settings dialog')
 check(

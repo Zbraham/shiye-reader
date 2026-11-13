@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Chapter } from '@shared/types'
+import { snapParagraphEnd } from '@shared/plot/select'
 import { useApp } from '../store'
 import { errorText, unwrap } from '../lib'
 import { onBack } from '../back'
@@ -30,6 +31,7 @@ export function SelectionToolbar({
   onClose
 }: SelectionToolbarProps): React.JSX.Element {
   const setDiff = useApp((state) => state.setDiff)
+  const openPlot = useApp((state) => state.openPlot)
   const showToast = useApp((state) => state.showToast)
   const [mode, setMode] = useState<ManualMode>('rewrite')
   const [instruction, setInstruction] = useState('')
@@ -82,6 +84,23 @@ export function SelectionToolbar({
     }
   }
 
+  const openPlotFromSelection = (): void => {
+    const snapped = snapParagraphEnd(chapter.content, selection.end)
+    if (snapped <= 0 || snapped >= chapter.content.length) {
+      showToast('error', '请选择本章中靠前的段落，段末之后才有可重写的内容。')
+      return
+    }
+    openPlot({
+      chapterIdx: chapter.idx,
+      startMode: 'paragraph',
+      offset: snapped,
+      excerpt: chapter.content
+        .slice(selection.start, Math.min(snapped, selection.start + 100))
+        .trim()
+    })
+    onClose()
+  }
+
   const width = 316
   const left = Math.max(
     16,
@@ -129,7 +148,16 @@ export function SelectionToolbar({
           }
         }}
       />
-      <div className="row" style={{ justifyContent: 'flex-end' }}>
+      <div className="row">
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={busy}
+          title="保留到这一段末尾，重写本章剩余部分与后两章"
+          onClick={openPlotFromSelection}
+        >
+          改后续
+        </button>
+        <span style={{ flex: 1 }} />
         <button className="btn btn-quiet btn-sm" disabled={busy} onClick={onClose}>
           取消
         </button>
