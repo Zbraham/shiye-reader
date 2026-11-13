@@ -30,12 +30,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: android/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            android/package-lock.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
-      - name: Install web dependencies
+      - name: Install shared dependencies
+        run: npm ci --ignore-scripts
+      - name: Install Android dependencies
         working-directory: android
         run: npm ci
       - name: Build web bundle and sync Capacitor
