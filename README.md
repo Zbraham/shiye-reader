@@ -4,6 +4,8 @@
 
 同一套界面、字体和写作内核同时运行在 Windows 与 Android 上。桌面端用 Electron，手机端用 Capacitor 承载同一份 React 渲染层，业务逻辑直接复用，不存在两套功能各写一遍的问题。
 
+源码与发布页：https://github.com/Zbraham/shiye-reader
+
 <p>
   <img src="docs/screenshots/android-library.png" width="170" alt="书架" />
   <img src="docs/screenshots/android-reader.png" width="170" alt="阅读器" />
@@ -13,11 +15,11 @@
 
 ## 下载与安装
 
-在仓库的 `release` 目录（或 GitHub Releases）里选一个：
+在仓库的 `release` 目录（或 GitHub Releases）里选一个。GitHub Releases 上的文件名使用 ASCII，本地 `release` 目录保留中文名：
 
-- **Windows 安装包** `拾页-1.0.0-安装包.exe`：常规安装，可选安装位置，会创建桌面和开始菜单快捷方式。
-- **Windows 免安装版** `拾页-1.0.0-免安装.exe`：双击即用，不写注册表，适合放在 U 盘或临时使用。
-- **Android** `拾页-1.0.0-Android.apk`：支持 Android 6.0（API 23）及以上，约 22 MB。
+- **Windows 安装包** `Shiye-1.0.0-Setup.exe`（本地：`拾页-1.0.0-安装包.exe`）：常规安装，可选安装位置，会创建桌面和开始菜单快捷方式。
+- **Windows 免安装版** `Shiye-1.0.0-Portable.exe`（本地：`拾页-1.0.0-免安装.exe`）：双击即用，不写注册表，适合放在 U 盘或临时使用。
+- **Android** `Shiye-1.0.0-Android.apk`（本地：`拾页-1.0.0-Android.apk`）：支持 Android 6.0（API 23）及以上，约 22 MB；校验文件为 `Shiye-1.0.0-Android.apk.sha256`。
 
 Windows 安装包没有购买代码签名证书，首次运行可能提示“未知发布者”，选择“更多信息 → 仍要运行”即可。Android APK 使用项目自己的发布密钥签名；首次安装需要在系统里允许当前文件管理器“安装未知应用”。
 
