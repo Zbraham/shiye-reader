@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 512px; height: 512px; background: transparent; }
+      .icon {
+        position: relative;
+        width: 512px;
+        height: 512px;
+        border-radius: 112px;
+        background: #f7f4ec;
+        border: 5px solid #ded5c4;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .frame {
+        position: absolute;
+        inset: 30px;
+        border: 2px solid #e8e0d0;
+        border-radius: 88px;
+      }
+      .glyph {
+        position: relative;
+        margin-top: -12px;
+        font-family: "STSong", "SimSun", "Songti SC", serif;
+        font-weight: 500;
+        font-size: 286px;
+        line-height: 1;
+        color: #2a2a28;
+        letter-spacing: -8px;
+      }
+      .rule {
+        position: relative;
+        margin-top: 30px;
+        width: 112px;
+        height: 9px;
+        border-radius: 5px;
+        background: #a8794f;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="icon">
+      <div class="frame"></div>
+      <div class="glyph">拾</div>
+      <div class="rule"></div>
+    </div>
+  </body>
+</html>

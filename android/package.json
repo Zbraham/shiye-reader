@@ -1,0 +1,38 @@
+{
+  "name": "shiye-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "拾页 Android 客户端（Capacitor + 共享内核）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "sync": "npm run build && cap sync android",
+    "open": "cap open android",
+    "apk:debug": "npm run sync && cd android && gradlew.bat assembleDebug",
+    "apk:release": "npm run sync && cd android && gradlew.bat assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.6.10",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/core": "^7.6.10",
+    "@capacitor/filesystem": "^7.0.0",
+    "@capacitor/keyboard": "^7.0.0",
+    "@capacitor/share": "^7.0.0",
+    "@capacitor/splash-screen": "^7.0.0",
+    "@capacitor/status-bar": "^7.0.0",
+    "@fontsource-variable/noto-sans-sc": "^5.3.1",
+    "@fontsource-variable/noto-serif-sc": "^5.3.1",
+    "@fontsource/lxgw-wenkai": "^5.3.0",
+    "sql.js": "^1.16.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.6.10",
+    "@types/react": "^18.3.27",
+    "@types/react-dom": "^18.3.7",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.8"
+  }
+}

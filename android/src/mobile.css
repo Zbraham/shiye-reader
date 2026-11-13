@@ -1,0 +1,572 @@
+/*
+ * Android / touch layout.
+ *
+ * The desktop renderer keeps its own visual language; this sheet only changes
+ * geometry, hit targets and the places where a phone needs a different
+ * interaction (tap to reveal chrome, drawers, bottom sheets, safe areas).
+ */
+
+html[data-platform='android'] {
+  --safe-top: max(env(safe-area-inset-top), var(--android-status-top, 0px));
+  --safe-bottom: max(env(safe-area-inset-bottom), var(--android-nav-bottom, 0px));
+  height: 100%;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html[data-platform='android'] body {
+  height: 100%;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+html[data-platform='android'] .shell {
+  height: 100vh;
+  height: 100dvh;
+}
+
+html[data-platform='android'] button {
+  touch-action: manipulation;
+}
+
+/* Larger touch targets without changing the desktop density tokens. */
+html[data-platform='android'] .icon-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
+
+html[data-platform='android'] .btn {
+  height: 40px;
+  padding: 0 15px;
+}
+
+html[data-platform='android'] .btn-sm {
+  height: 34px;
+  padding: 0 12px;
+  font-size: var(--text-sm);
+}
+
+html[data-platform='android'] .chip {
+  min-height: 36px;
+  padding: 0 14px;
+}
+
+html[data-platform='android'] .seg button {
+  height: 34px;
+  padding: 0 13px;
+}
+
+html[data-platform='android'] .input,
+html[data-platform='android'] .textarea,
+html[data-platform='android'] select {
+  font-size: 16px;
+}
+
+html[data-platform='android'] .input {
+  min-height: 42px;
+}
+
+html[data-platform='android'] .link-btn {
+  min-height: 32px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Reader                                                              */
+/* ------------------------------------------------------------------ */
+
+html[data-platform='android'] .reader-shell {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+html[data-platform='android'] .reader-topbar {
+  height: calc(var(--layout-topbar) + var(--safe-top));
+  padding: var(--safe-top) 8px 0;
+  gap: 2px;
+  border-bottom-color: var(--color-line);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+  transition: transform 200ms var(--motion-ease), opacity 200ms var(--motion-ease);
+}
+
+html[data-platform='android'] .reader-topbar[data-hidden='true'] {
+  transform: translateY(-100%);
+  opacity: 0;
+}
+
+html[data-platform='android'] .reader-topbar .topbar-title {
+  font-size: 14px;
+}
+
+html[data-platform='android'] .reader-topbar .topbar-sub {
+  font-size: 11px;
+}
+
+html[data-platform='android'] .reader-grid,
+html[data-platform='android'] .reader-grid[data-panel='true'] {
+  display: block;
+  height: 100vh;
+  height: 100dvh;
+}
+
+html[data-platform='android'] .reader-scroll {
+  height: 100vh;
+  height: 100dvh;
+  padding-top: calc(var(--safe-top) + var(--layout-topbar) + 4px);
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: auto;
+}
+
+html[data-platform='android'] .reader-article {
+  max-width: none;
+  padding: 20px 22px calc(var(--safe-bottom) + 104px);
+}
+
+html[data-platform='android'] .chapter-kicker {
+  margin-bottom: 12px;
+}
+
+html[data-platform='android'] .chapter-title {
+  margin-bottom: 26px;
+}
+
+html[data-platform='android'] .prose p {
+  line-height: 1.9;
+  margin-bottom: 0.8em;
+}
+
+html[data-platform='android'] .reader-banner {
+  margin: 0 -4px 18px;
+  padding: 10px 12px;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.65;
+}
+
+html[data-platform='android'] .reader-banner .banner-actions {
+  flex: 0 0 auto;
+}
+
+html[data-platform='android'] .chapter-nav {
+  margin-top: 26px;
+}
+
+html[data-platform='android'] .chapter-nav .btn {
+  height: 40px;
+}
+
+html[data-platform='android'] .progress-label {
+  display: none;
+}
+
+html[data-platform='android'] .bottom-progress {
+  bottom: 0;
+  z-index: 32;
+}
+
+/* Bottom action bar, revealed together with the top bar. */
+html[data-platform='android'] .reader-mobilebar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  display: flex;
+  align-items: stretch;
+  height: calc(58px + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-line);
+  transition: transform 200ms var(--motion-ease), opacity 200ms var(--motion-ease);
+}
+
+html[data-platform='android'] .reader-mobilebar[data-hidden='true'] {
+  transform: translateY(110%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+html[data-platform='android'] .mobilebar-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1;
+}
+
+html[data-platform='android'] .mobilebar-btn:active {
+  color: var(--color-accent);
+}
+
+html[data-platform='android'] .mobilebar-btn:disabled {
+  opacity: 0.35;
+}
+
+html[data-platform='android'] .mobilebar-btn[aria-pressed='true'] {
+  color: var(--color-accent);
+}
+
+html[data-platform='android'] .mobilebar-count {
+  flex: 0 0 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-accent);
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  border-left: 1px solid var(--color-line);
+  border-right: 1px solid var(--color-line);
+}
+
+/* Scrim behind the TOC and the side panel. */
+html[data-platform='android'] .mobile-scrim {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(18, 18, 16, 0.32);
+  animation: shiye-fade 160ms var(--motion-ease);
+}
+
+html[data-theme='night'][data-platform='android'] .mobile-scrim {
+  background: rgba(0, 0, 0, 0.52);
+}
+
+@keyframes shiye-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* TOC becomes a left drawer that clears the status bar. */
+html[data-platform='android'] .toc-drawer {
+  width: min(84vw, 336px);
+  z-index: 60;
+  padding-top: var(--safe-top);
+  box-shadow: 8px 0 28px rgba(0, 0, 0, 0.08);
+}
+
+html[data-platform='android'] .toc-head {
+  height: 52px;
+  padding: 0 8px 0 16px;
+}
+
+html[data-platform='android'] .toc-item {
+  padding: 13px 12px;
+  font-size: var(--text-sm);
+}
+
+html[data-platform='android'] .toc-list {
+  padding: 6px 8px calc(var(--safe-bottom) + 24px);
+}
+
+/* Side panel slides in from the right instead of taking grid width. */
+html[data-platform='android'] .side-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(92vw, 400px);
+  height: 100vh;
+  height: 100dvh;
+  min-width: 0;
+  z-index: 58;
+  padding-top: var(--safe-top);
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.08);
+  transform: translateX(103%);
+  transition: transform 200ms var(--motion-ease);
+}
+
+html[data-platform='android'] .side-panel[data-open='true'] {
+  transform: translateX(0);
+}
+
+html[data-platform='android'] .side-panel[data-open='false'] {
+  visibility: visible;
+  transform: translateX(103%);
+  pointer-events: none;
+}
+
+html[data-platform='android'] .panel-head {
+  height: 52px;
+  padding: 0 8px 0 14px;
+}
+
+html[data-platform='android'] .panel-tab {
+  height: 36px;
+  padding: 0 13px;
+}
+
+html[data-platform='android'] .panel-body {
+  padding: 16px 16px calc(var(--safe-bottom) + 40px);
+  gap: 20px;
+}
+
+/* Selection actions become a bottom sheet. */
+html[data-platform='android'] .selection-bar {
+  left: 8px !important;
+  right: 8px !important;
+  top: auto !important;
+  bottom: calc(var(--safe-bottom) + 8px) !important;
+  width: auto !important;
+  max-height: 72vh;
+  max-height: 72dvh;
+  overflow-y: auto;
+  z-index: 100;
+  padding: 12px;
+  gap: 10px;
+  border-radius: 14px;
+  box-shadow: 0 -10px 34px rgba(0, 0, 0, 0.14);
+  animation: shiye-sheet-in 180ms var(--motion-ease);
+}
+
+@keyframes shiye-sheet-in {
+  from {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+html[data-platform='android'] .selection-modes {
+  gap: 4px;
+}
+
+html[data-platform='android'] .selection-modes button {
+  height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+html[data-platform='android'] .selection-bar .row {
+  gap: 8px;
+}
+
+html[data-platform='android'] .selection-bar .row .btn {
+  flex: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dialogs                                                             */
+/* ------------------------------------------------------------------ */
+
+html[data-platform='android'] .overlay {
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  overflow: hidden;
+}
+
+html[data-platform='android'] .dialog,
+html[data-platform='android'] .dialog[data-wide='true'] {
+  width: 100%;
+  max-width: none;
+  height: 100vh;
+  height: 100dvh;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-platform='android'] .dialog-head {
+  flex: 0 0 auto;
+  height: calc(52px + var(--safe-top));
+  padding: var(--safe-top) 8px 0 18px;
+}
+
+html[data-platform='android'] .dialog-body {
+  flex: 1 1 auto;
+  max-height: none;
+  padding: 18px 18px 28px;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .dialog-foot {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px calc(12px + var(--safe-bottom));
+}
+
+html[data-platform='android'] .dialog-foot .btn {
+  flex: 1 1 auto;
+  min-width: 96px;
+}
+
+html[data-platform='android'] .settings-section {
+  padding: 16px 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Diff preview                                                        */
+/* ------------------------------------------------------------------ */
+
+html[data-platform='android'] .diff-head {
+  height: calc(52px + var(--safe-top));
+  padding: var(--safe-top) 6px 0 16px;
+  gap: 8px;
+}
+
+html[data-platform='android'] .diff-head .hint {
+  font-size: 11px;
+}
+
+html[data-platform='android'] .diff-scroll {
+  padding: 16px 14px calc(var(--safe-bottom) + 92px);
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .diff-card {
+  padding: 12px 14px 14px;
+}
+
+html[data-platform='android'] .diff-text {
+  font-size: 17px;
+  line-height: 1.9;
+}
+
+html[data-platform='android'] .diff-foot {
+  height: calc(64px + var(--safe-bottom));
+  padding: 0 12px var(--safe-bottom);
+  gap: 8px;
+}
+
+html[data-platform='android'] .diff-foot .btn {
+  flex: 0 1 auto;
+}
+
+html[data-platform='android'] .diff-foot .count {
+  font-size: 11px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Library and setup                                                   */
+/* ------------------------------------------------------------------ */
+
+html[data-platform='android'] .library {
+  height: 100vh;
+  height: 100dvh;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .library-inner {
+  padding: 0 18px calc(var(--safe-bottom) + 48px);
+}
+
+html[data-platform='android'] .library-header {
+  height: calc(68px + var(--safe-top));
+  padding-top: var(--safe-top);
+  gap: 8px;
+}
+
+html[data-platform='android'] .library-header .brand {
+  font-size: 19px;
+  letter-spacing: 0.06em;
+}
+
+html[data-platform='android'] .library-header .brand small {
+  display: none;
+}
+
+html[data-platform='android'] .library-header .btn-primary {
+  padding: 0 12px;
+  font-size: var(--text-sm);
+}
+
+html[data-platform='android'] .library-sub {
+  margin: 2px 0 18px;
+}
+
+html[data-platform='android'] .book-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 14px;
+}
+
+html[data-platform='android'] .book-cover {
+  padding: 14px 12px;
+  aspect-ratio: 3 / 4.1;
+}
+
+html[data-platform='android'] .book-cover h3 {
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+html[data-platform='android'] .book-cover .cover-foot {
+  font-size: 11px;
+}
+
+html[data-platform='android'] .book-kebab {
+  width: 36px;
+  height: 36px;
+}
+
+html[data-platform='android'] .empty {
+  padding: 18vh 12px 0;
+}
+
+html[data-platform='android'] .setup {
+  height: 100vh;
+  height: 100dvh;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .setup-inner {
+  max-width: none;
+  padding: calc(var(--safe-top) + 10px) 18px
+    calc(var(--safe-bottom) + 120px);
+}
+
+html[data-platform='android'] .setup-head {
+  height: 44px;
+  margin-bottom: 20px;
+}
+
+html[data-platform='android'] .setup h1 {
+  font-size: 23px;
+}
+
+html[data-platform='android'] .setup .lead {
+  margin-bottom: 24px;
+}
+
+html[data-platform='android'] .wizard-foot {
+  position: sticky;
+  bottom: 0;
+  margin: 24px -18px 0;
+  padding: 12px 18px calc(12px + var(--safe-bottom));
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-line);
+  z-index: 10;
+}
+
+/* Toasts sit above the mobile bar, never under the navigation gesture area. */
+html[data-platform='android'] .toast {
+  bottom: calc(var(--safe-bottom) + 74px);
+  max-width: calc(100vw - 24px);
+  text-align: center;
+}
+
+/* Menus anchored inside cards should stay on screen. */
+html[data-platform='android'] .menu {
+  max-width: calc(100vw - 36px);
+}

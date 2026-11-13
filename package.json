@@ -1,0 +1,103 @@
+{
+  "name": "shiye-reader",
+  "version": "1.0.0",
+  "description": "拾页 — 本地优先的连载写作与阅读器",
+  "author": "拾页",
+  "main": "./out/main/index.js",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "icon": "electron build/icon-src/render.cjs",
+    "dist": "npm run build && electron-builder --win",
+    "dist:dir": "npm run build && electron-builder --win --dir"
+  },
+  "dependencies": {
+    "diff": "^9.0.0",
+    "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^13.1.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.18.0",
+    "@types/react": "^18.3.27",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^5.2.0",
+    "autoprefixer": "^10.4.21",
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "lucide-react": "^1.72.0",
+    "postcss": "^8.5.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.8",
+    "vitest": "^3.2.7",
+    "zustand": "^5.0.16"
+  },
+  "build": {
+    "appId": "com.shiye.reader",
+    "productName": "拾页",
+    "copyright": "拾页",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "npmRebuild": false,
+    "compression": "maximum",
+    "removePackageScripts": true,
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "拾页-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "拾页",
+      "uninstallDisplayName": "拾页",
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "artifactName": "拾页-${version}-安装包.${ext}"
+    },
+    "portable": {
+      "artifactName": "拾页-${version}-免安装.${ext}"
+    }
+  }
+}

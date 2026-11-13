@@ -1,0 +1,1666 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>拾页 · 一句话，写成一本书</title>
+<style>
+  @font-face{font-family:'NotoSerifSC';src:url('assets/fonts/NotoSerifSC-VF.ttf') format('truetype');font-weight:100 900;font-display:block}
+  @font-face{font-family:'NotoSansSC';src:url('assets/fonts/NotoSansSC-VF.ttf') format('truetype');font-weight:100 900;font-display:block}
+  html,body{margin:0;padding:0;background:#0d0b09;overflow:hidden}
+  canvas{display:block;margin:0 auto}
+  @media (max-aspect-ratio: 9/16){canvas{width:100vw;height:auto}}
+  @media (min-aspect-ratio: 9/16){canvas{height:100vh;width:auto}}
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+'use strict';
+/* ============================================================
+   拾页 · 抖音介绍片（67.5s）
+   纯 Canvas 2D，render(t) 为闭式函数；固定 seed，无累计状态。
+   ============================================================ */
+const W = 1080, H = 1920, FPS = 30, DUR = 67.5;
+const SEED = 20261112;
+const TAU = Math.PI * 2;
+
+const C = {
+  paper:'#F7F4EC', surface:'#FBF8F2', raised:'#F0ECE2',
+  ink:'#211D19', text:'#2A2A28', muted:'#6A655B', faint:'#8C8679',
+  line:'rgba(42,42,40,0.12)', lineStrong:'rgba(42,42,40,0.22)',
+  accent:'#8A6A4F', accentSoft:'rgba(138,106,79,0.10)',
+  cinnabar:'#A8332A', cinnabarDeep:'#7E211B', cinnabarSoft:'rgba(168,51,42,0.12)',
+  gold:'#C9A227', goldLight:'#E8CE86', goldDeep:'#8B6B1F',
+  night:'#16161A', nightSurface:'#1B1B20', nightText:'#C9C7C2', nightMuted:'#98958E',
+  sage:'#E9EFE4', sageText:'#2B332B', sageAccent:'#5F6B5A',
+  white:'#FFFFFF', whiteText:'#1F1F1F'
+};
+const FS = '"NotoSerifSC"';
+const FN = '"NotoSansSC"';
+const FK = '"KaiTi","STKaiti","SimSun",serif';
+
+const clamp = (x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const lerp  = (a,b,p)=>a+(b-a)*p;
+const seg   = (t,a,b)=>clamp((t-a)/(b-a));
+const eo3   = p=>1-Math.pow(1-p,3);
+const eo5   = p=>1-Math.pow(1-p,5);
+const eio   = p=>p*p*(3-2*p);
+const eob   = (p,s=1.25)=>1+(s+1)*Math.pow(p-1,3)+s*Math.pow(p-1,2);
+const pulse = (p,at,decay=9)=>p<at?0:Math.exp(-(p-at)*decay);
+
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function spring(p, k=196, c=23.8, m=1, v0=0){
+  p = Math.max(0, p); if (p === 0) return 0;
+  const w = Math.sqrt(k/m), z = c/(2*Math.sqrt(k*m));
+  if (Math.abs(z-1) < 1e-5) return 1 + (-1 + (v0-w)*p)*Math.exp(-w*p);
+  if (z < 1) {
+    const wd = w*Math.sqrt(1-z*z);
+    return 1 + Math.exp(-z*w*p)*(-Math.cos(wd*p) + (v0-z*w)/wd*Math.sin(wd*p));
+  }
+  const r1 = -w*(z-Math.sqrt(z*z-1)), r2 = -w*(z+Math.sqrt(z*z-1));
+  const a = (v0+r2)/(r1-r2), b = -1-a;
+  return 1 + a*Math.exp(r1*p) + b*Math.exp(r2*p);
+}
+function withAlpha(hex, a){
+  const h = hex.replace('#','');
+  const n = parseInt(h.length===3 ? h.split('').map(x=>x+x).join('') : h, 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+function mixColor(a,b,p){
+  const pa = parseInt(a.slice(1),16), pb = parseInt(b.slice(1),16);
+  const r = Math.round(lerp((pa>>16)&255,(pb>>16)&255,p));
+  const g = Math.round(lerp((pa>>8)&255,(pb>>8)&255,p));
+  const bl = Math.round(lerp(pa&255,pb&255,p));
+  return `rgb(${r},${g},${bl})`;
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha:false });
+
+/* ---------------- assets ---------------- */
+const asset = {
+  paper:null, paperDark:null, paperCard:null,
+  inkFull:null, grain:[], icon:null,
+  dust:[], goldDust:[], inkEdge:[],
+  p1:null, p2:null
+};
+
+function makePaper(w,h,opts={}){
+  const cv = document.createElement('canvas'); cv.width=w; cv.height=h;
+  const x = cv.getContext('2d');
+  const dark = !!opts.dark;
+  x.fillStyle = dark ? '#17161A' : (opts.base || C.paper);
+  x.fillRect(0,0,w,h);
+  const r = mulberry32(opts.seed || 977);
+  // long fibers
+  for (let i=0;i<Math.round(w*h/260);i++){
+    const px = r()*w, py = r()*h;
+    const len = 8 + r()*70;
+    const a = r()*TAU;
+    x.strokeStyle = dark
+      ? `rgba(255,255,255,${0.008+r()*0.018})`
+      : `rgba(96,84,63,${0.012+r()*0.028})`;
+    x.lineWidth = 0.4 + r()*0.9;
+    x.beginPath(); x.moveTo(px,py);
+    x.quadraticCurveTo(px+Math.cos(a)*len*0.5+(r()-.5)*8, py+Math.sin(a)*len*0.5+(r()-.5)*8, px+Math.cos(a)*len, py+Math.sin(a)*len);
+    x.stroke();
+  }
+  // soft blotches
+  for (let i=0;i<Math.round(w*h/16000);i++){
+    const px = r()*w, py = r()*h, rr = 30 + r()*170;
+    const g = x.createRadialGradient(px,py,0,px,py,rr);
+    const al = dark ? 0.035+r()*0.05 : 0.018+r()*0.028;
+    g.addColorStop(0, dark ? `rgba(255,255,255,${al})` : `rgba(120,104,78,${al})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g; x.beginPath(); x.arc(px,py,rr,0,TAU); x.fill();
+  }
+  // vignette
+  const vg = x.createRadialGradient(w*0.5,h*0.46,Math.min(w,h)*0.2,w*0.5,h*0.5,Math.max(w,h)*0.72);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,dark?'rgba(0,0,0,0.30)':'rgba(83,68,44,0.06)');
+  x.fillStyle=vg; x.fillRect(0,0,w,h);
+  return cv;
+}
+function makeInkFull(){
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const x=cv.getContext('2d');
+  const g=x.createRadialGradient(W/2,H/2,80,W/2,H/2,1200);
+  g.addColorStop(0,'#1A1713'); g.addColorStop(.55,'#15120F'); g.addColorStop(.85,'#100E0C'); g.addColorStop(1,'#0C0A08');
+  x.fillStyle=g; x.fillRect(0,0,W,H);
+  const r=mulberry32(5511);
+  for(let i=0;i<2600;i++){
+    const px=r()*W, py=r()*H, rr=1+r()*4;
+    x.fillStyle=`rgba(255,255,255,${0.004+r()*0.016})`;
+    x.beginPath(); x.arc(px,py,rr,0,TAU); x.fill();
+  }
+  for(let i=0;i<30;i++){
+    const px=r()*W, py=r()*H, rr=80+r()*280;
+    const gg=x.createRadialGradient(px,py,0,px,py,rr);
+    gg.addColorStop(0,'rgba(80,68,52,0.05)'); gg.addColorStop(1,'rgba(0,0,0,0)');
+    x.fillStyle=gg; x.beginPath(); x.arc(px,py,rr,0,TAU); x.fill();
+  }
+  return cv;
+}
+function makeGrain(seed){
+  const s=192, cv=document.createElement('canvas'); cv.width=s; cv.height=s;
+  const x=cv.getContext('2d'), img=x.createImageData(s,s), r=mulberry32(seed);
+  for(let i=0;i<s*s;i++){
+    const v=Math.floor(r()*255);
+    img.data[i*4]=v; img.data[i*4+1]=v; img.data[i*4+2]=v; img.data[i*4+3]=22;
+  }
+  x.putImageData(img,0,0); return cv;
+}
+function makeEdge(seed){
+  const r=mulberry32(seed), arr=[];
+  for(let i=0;i<128;i++) arr.push(0.965 + r()*0.07 + Math.sin(i*0.71)*0.012);
+  return arr;
+}
+function loadImage(src){
+  return new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; });
+}
+function buildParticles(){
+  const r=mulberry32(SEED+31);
+  asset.dust=[];
+  for(let i=0;i<300;i++){
+    asset.dust.push({x:r()*W,y:r()*H,r:0.8+r()*2.4,a:0.05+r()*0.16,ph:r()*TAU,sp:0.15+r()*0.5,gold:r()<0.14});
+  }
+  asset.goldDust=[];
+  for(let i=0;i<120;i++){
+    asset.goldDust.push({x:r()*W,y:r()*H,r:0.8+r()*2.2,a:0.10+r()*0.35,ph:r()*TAU,sp:0.2+r()*0.6});
+  }
+}
+
+/* ---------------- drawing helpers ---------------- */
+function font(size, weight=700, family=FS){ return `${weight} ${size}px ${family}`; }
+function text(str,x,y,opt={}){
+  const {size=80,weight=700,family=FS,color=C.ink,align='center',baseline='middle',alpha=1,letter=0,rot=0,blur=0,stroke=null,sw=0}=opt;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.translate(x,y); if(rot) ctx.rotate(rot);
+  ctx.font = font(size,weight,family);
+  ctx.textAlign = align; ctx.textBaseline = baseline;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = letter+'px';
+  if (blur) ctx.filter = `blur(${blur}px)`;
+  if (stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=sw; ctx.strokeText(str,0,0); }
+  ctx.fillStyle=color; ctx.fillText(str,0,0);
+  ctx.restore();
+}
+function vtext(str,x,y,size,opt={}){
+  const {weight=700,family=FK,color=C.ink,alpha=1,gap=1.12,align='center'}=opt;
+  const chars=[...str];
+  chars.forEach((ch,i)=>{
+    text(ch,x,y+i*size*gap,{size,weight,family,color,alpha,align});
+  });
+}
+function measure(str,size,weight=700,family=FS){
+  ctx.save(); ctx.font=font(size,weight,family); const w=ctx.measureText(str).width; ctx.restore(); return w;
+}
+function fitSize(str,maxW,size,weight=700,family=FS){
+  const w=measure(str,size,weight,family);
+  return w>maxW ? size*maxW/w : size;
+}
+function wrap(str,maxW,size,weight=700,family=FS){
+  ctx.save(); ctx.font=font(size,weight,family);
+  const lines=[]; let line='';
+  for(const ch of str){
+    if(ch==='\n'){ lines.push(line); line=''; continue; }
+    const t=line+ch;
+    if(ctx.measureText(t).width>maxW && line){ lines.push(line); line=ch; } else line=t;
+  }
+  if(line) lines.push(line);
+  ctx.restore(); return lines;
+}
+function roundRect(x,y,w,h,r){
+  const rr=Math.min(r,w/2,h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+rr,y);
+  ctx.arcTo(x+w,y,x+w,y+h,rr);
+  ctx.arcTo(x+w,y+h,x,y+h,rr);
+  ctx.arcTo(x,y+h,x,y,rr);
+  ctx.arcTo(x,y,x+w,y,rr);
+  ctx.closePath();
+}
+function uiCard(x,y,w,h,opt={}){
+  const {r=22,fill=C.surface,stroke=C.line,shadow=true,alpha=1,texture=true}=opt;
+  ctx.save(); ctx.globalAlpha*=alpha;
+  if(shadow){ ctx.shadowColor='rgba(40,30,18,0.12)'; ctx.shadowBlur=34; ctx.shadowOffsetY=12; }
+  roundRect(x,y,w,h,r); ctx.fillStyle=fill; ctx.fill();
+  ctx.shadowColor='transparent';
+  if(texture){ ctx.save(); roundRect(x,y,w,h,r); ctx.clip(); ctx.globalAlpha*=0.32; ctx.drawImage(asset.paperCard,0,0,W,H); ctx.restore(); }
+  if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1.2; roundRect(x,y,w,h,r); ctx.stroke(); }
+  ctx.restore();
+}
+function hairline(x1,y1,x2,y2,color=C.line,width=1.2,alpha=1){
+  ctx.save(); ctx.globalAlpha*=alpha; ctx.strokeStyle=color; ctx.lineWidth=width;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); ctx.restore();
+}
+function seal(str,x,y,size,opt={}){
+  const {rot=-0.08,alpha=1,color=C.cinnabar,ink=C.paper,chars=null}=opt;
+  ctx.save(); ctx.translate(x,y); ctx.rotate(rot); ctx.globalAlpha*=alpha;
+  // rough border
+  const r=mulberry32(SEED+str.length*17);
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  const n=48, rad=size*0.5;
+  for(let i=0;i<=n;i++){
+    const a=i/n*TAU, m=0.97+0.03*Math.sin(a*5)+ (r()-.5)*0.012;
+    const px=Math.cos(a)*rad*m, py=Math.sin(a)*rad*m;
+    i?ctx.lineTo(px,py):ctx.moveTo(px,py);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle=withAlpha(color,0.55); ctx.lineWidth=2; ctx.stroke();
+  // 2026-11-13: inner square frame removed — it crossed the characters and read as a stray box.
+  const arr=chars||[...str];
+  const fs=size/(arr.length>2?2.15:2.4);
+  if(arr.length<=2){
+    arr.forEach((ch,i)=>text(ch,0,(i-(arr.length-1)/2)*fs*1.05,{size:fs,weight:700,family:FK,color:ink}));
+  } else {
+    const half=Math.ceil(arr.length/2);
+    const left=arr.slice(0,half), right=arr.slice(half);
+    left.forEach((ch,i)=>text(ch,-fs*0.24,(i-(left.length-1)/2)*fs*1.02,{size:fs,weight:700,family:FK,color:ink}));
+    right.forEach((ch,i)=>text(ch,fs*0.24,(i-(right.length-1)/2)*fs*1.02,{size:fs,weight:700,family:FK,color:ink}));
+  }
+  ctx.restore();
+}
+function inkText(str,x,y,size,opt={}){
+  const {weight=700,family=FK,color=C.ink,alpha=1,rot=0,align='center',baseline='middle',rough=true}=opt;
+  ctx.save(); ctx.translate(x,y); if(rot) ctx.rotate(rot); ctx.globalAlpha*=alpha;
+  ctx.font=font(size,weight,family); ctx.textAlign=align; ctx.textBaseline=baseline;
+  if(rough){
+    const r=mulberry32(SEED+str.length*7);
+    for(let i=0;i<8;i++){
+      ctx.save(); ctx.globalAlpha*=0.10; ctx.translate((r()-.5)*2.6,(r()-.5)*2.6); ctx.fillStyle=color; ctx.fillText(str,0,0); ctx.restore();
+    }
+  }
+  ctx.fillStyle=color; ctx.fillText(str,0,0);
+  ctx.restore();
+}
+function drawPaperBG(t,opt={}){
+  const {alpha=1, mountains=true, sun=false, bamboo=false, dust=true, tone=0, dark=false}=opt;
+  ctx.save(); ctx.globalAlpha*=alpha;
+  ctx.drawImage(dark?asset.paperDark:asset.paper,0,0,W,H);
+  if(tone>0){ ctx.fillStyle=`rgba(20,18,16,${tone})`; ctx.fillRect(0,0,W,H); }
+  if(sun) goldSun(820,420,300,0.55);
+  if(mountains) inkMountains(0.5,t);
+  if(bamboo) bambooCorner(t);
+  if(dust) drawDust(t);
+  ctx.restore();
+}
+function inkMountains(alpha=0.5,t=0){
+  ctx.save(); ctx.globalAlpha*=alpha; ctx.globalCompositeOperation='multiply';
+  const layers=[
+    {y:1560, a:0.10, amp:120, seed:11},
+    {y:1660, a:0.15, amp:95, seed:22},
+    {y:1770, a:0.22, amp:70, seed:33}
+  ];
+  for(const L of layers){
+    const r=mulberry32(L.seed);
+    ctx.beginPath(); ctx.moveTo(-40,H);
+    ctx.lineTo(-40,L.y+40);
+    for(let x=-40;x<=W+40;x+=40){
+      const y=L.y+Math.sin(x*0.005+r()*0.2)*L.amp*0.35+Math.sin(x*0.013+L.seed)*L.amp*0.22 - Math.sin(t*0.08+L.seed)*6;
+      ctx.lineTo(x,y);
+    }
+    ctx.lineTo(W+40,H); ctx.closePath();
+    const g=ctx.createLinearGradient(0,L.y-100,0,H);
+    g.addColorStop(0,`rgba(48,44,38,${L.a})`);
+    g.addColorStop(1,`rgba(48,44,38,${L.a*0.25})`);
+    ctx.fillStyle=g; ctx.fill();
+  }
+  ctx.restore();
+}
+function goldSun(x,y,r,alpha=0.5){
+  ctx.save(); ctx.globalCompositeOperation='screen'; ctx.globalAlpha*=alpha;
+  const g=ctx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0,'rgba(232,206,134,0.55)');
+  g.addColorStop(0.35,'rgba(201,162,39,0.18)');
+  g.addColorStop(1,'rgba(201,162,39,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,TAU); ctx.fill();
+  ctx.globalAlpha*=0.5; ctx.strokeStyle='rgba(201,162,39,0.35)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(x,y,r*0.42,0,TAU); ctx.stroke();
+  ctx.restore();
+}
+function bambooCorner(t){
+  ctx.save(); ctx.globalAlpha*=0.72;
+  const r=mulberry32(707);
+  for(let s=0;s<3;s++){
+    const baseX=30+s*55, topY=760+s*70, botY=1780;
+    ctx.strokeStyle='rgba(40,46,36,0.16)'; ctx.lineWidth=6-s*1.2;
+    ctx.beginPath(); ctx.moveTo(baseX,botY);
+    ctx.quadraticCurveTo(baseX+30,botY-420, baseX-10+s*6,topY);
+    ctx.stroke();
+    for(let i=0;i<7;i++){
+      const yy=topY+ (i/7)*(botY-topY);
+      const xx=lerp(baseX-10+s*6,baseX, (yy-topY)/(botY-topY));
+      ctx.strokeStyle='rgba(40,46,36,0.12)'; ctx.lineWidth=1.4;
+      ctx.beginPath(); ctx.moveTo(xx-8,yy); ctx.lineTo(xx+8,yy); ctx.stroke();
+      if(i<5){
+        const dir=i%2?1:-1;
+        ctx.beginPath(); ctx.moveTo(xx,yy);
+        ctx.quadraticCurveTo(xx+dir*46,yy-26,xx+dir*96,yy-8);
+        ctx.strokeStyle='rgba(40,46,36,0.10)'; ctx.lineWidth=2.2; ctx.stroke();
+        ctx.beginPath(); ctx.ellipse(xx+dir*64,yy-16,34,7,dir*0.28,0,TAU);
+        ctx.fillStyle='rgba(40,46,36,0.09)'; ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+}
+function drawDust(t){
+  for(const p of asset.dust){
+    const x=(p.x + Math.sin(t*0.12+p.ph)*14 + t*3) % W;
+    const y=(p.y + Math.cos(t*0.1+p.ph)*10) % H;
+    ctx.fillStyle = p.gold ? `rgba(201,162,39,${p.a*0.8})` : `rgba(45,40,33,${p.a*0.55})`;
+    ctx.beginPath(); ctx.arc(x,y,p.r,0,TAU); ctx.fill();
+  }
+}
+function goldDust(t,alpha=1){
+  ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.globalAlpha*=alpha;
+  for(const p of asset.goldDust){
+    const x=(p.x + Math.sin(t*0.2+p.ph)*22) % W;
+    const y=(p.y + Math.cos(t*0.16+p.ph)*16 - t*4) % H;
+    const yy=(y+H)%H;
+    ctx.fillStyle=`rgba(232,206,134,${p.a*0.55})`;
+    ctx.beginPath(); ctx.arc(x,yy,p.r,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+function vignette(){
+  const g=ctx.createRadialGradient(W/2,H*0.46,Math.min(W,H)*0.30,W/2,H*0.5,Math.max(W,H)*0.80);
+  g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(16,12,8,0.22)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+}
+function grain(t){
+  const idx=Math.floor(t*FPS)%3;
+  ctx.save(); ctx.globalAlpha=0.20; ctx.globalCompositeOperation='overlay';
+  const g=asset.grain[idx];
+  const ox=(Math.floor(t*FPS)*37)%192, oy=(Math.floor(t*FPS)*71)%192;
+  for(let y=-192;y<H+192;y+=192) for(let x=-192;x<W+192;x+=192) ctx.drawImage(g,x+ox,y+oy);
+  ctx.restore();
+}
+function ripple(x,y,t0,t,color=C.gold,alpha=1,maxR=260){
+  const age=t-t0; if(age<0||age>1.4) return;
+  const p=age/1.4, r=40+p*maxR;
+  ctx.save(); ctx.globalAlpha*=alpha*(1-p)*0.55;
+  ctx.strokeStyle=color; ctx.lineWidth=1.6*(1-p)+0.4;
+  ctx.beginPath();
+  for(let i=0;i<=96;i++){
+    const a=i/96*TAU;
+    const rr=r*(1+0.02*Math.sin(a*3+x*0.01)+0.012*Math.sin(a*5+y*0.01));
+    const px=x+Math.cos(a)*rr, py=y+Math.sin(a)*rr*0.94;
+    i?ctx.lineTo(px,py):ctx.moveTo(px,py);
+  }
+  ctx.closePath(); ctx.stroke();
+  ctx.restore();
+}
+function edgeAt(edge,i,n){
+  if(!edge) return 1;
+  const f=i/n*edge.length;
+  const i0=Math.floor(f)%edge.length, i1=(i0+1)%edge.length;
+  const fr=f-Math.floor(f);
+  return edge[i0]*(1-fr)+edge[i1]*fr;
+}
+function roughCirclePath(cx,cy,R,seed,amp=0.05,edge=null){
+  const n=256;
+  ctx.beginPath();
+  for(let i=0;i<=n;i++){
+    const a=i/n*TAU;
+    const m=1 + amp*(Math.sin(a*2+seed*0.7)*0.55 + Math.sin(a*3+seed*1.3)*0.30 + Math.sin(a*5+seed*2.1)*0.15);
+    const mm=edgeAt(edge,i,n);
+    const px=cx+Math.cos(a)*R*m*mm, py=cy+Math.sin(a)*R*m*mm;
+    i?ctx.lineTo(px,py):ctx.moveTo(px,py);
+  }
+  ctx.closePath();
+}
+
+/* ---------------- transitions ---------------- */
+const overlay=document.createElement('canvas'); overlay.width=W; overlay.height=H;
+const octx=overlay.getContext('2d');
+
+function inkCover(p,cx,cy,seed,color='#17130F',edge){
+  if(p<=0) return;
+  const R=p*1650;
+  ctx.save();
+  const g=ctx.createRadialGradient(cx,cy,Math.max(1,R*0.15),cx,cy,Math.max(2,R*1.06));
+  g.addColorStop(0,color); g.addColorStop(0.82,color); g.addColorStop(0.96,withAlpha(color,0.96)); g.addColorStop(1,withAlpha(color,0));
+  ctx.fillStyle=g;
+  roughCirclePath(cx,cy,R,seed,0.08,edge); ctx.fill();
+  ctx.globalAlpha=0.32; roughCirclePath(cx+8,cy-6,R*0.97,seed+2,0.07,edge); ctx.fillStyle=color; ctx.fill();
+  // soft ink bleed at the edge
+  ctx.globalAlpha=0.22; ctx.fillStyle=color;
+  roughCirclePath(cx,cy,R*1.03,seed+4,0.06,edge); ctx.fill();
+  // edge gold rim
+  ctx.globalAlpha=0.5;
+  ctx.strokeStyle=withAlpha(C.gold,0.5); ctx.lineWidth=2.2;
+  roughCirclePath(cx,cy,R,seed,0.05,edge); ctx.stroke();
+  ctx.restore();
+}
+function inkReveal(p,cx,cy,seed,color='#17130F',edge){
+  if(p>=1) return;
+  const R=Math.max(1,p*1650);
+  octx.setTransform(1,0,0,1,0,0);
+  octx.globalCompositeOperation='source-over'; octx.globalAlpha=1;
+  octx.clearRect(0,0,W,H);
+  octx.drawImage(asset.inkFull,0,0);
+  octx.globalCompositeOperation='destination-out';
+  roughCirclePathOn(octx,cx,cy,R,seed,0.08,edge); octx.fill();
+  octx.globalCompositeOperation='source-over';
+  ctx.drawImage(overlay,0,0);
+  ctx.save(); ctx.globalAlpha=0.5;
+  ctx.strokeStyle=withAlpha(C.gold,0.55); ctx.lineWidth=2.4;
+  roughCirclePath(cx,cy,R,seed,0.08,edge); ctx.stroke();
+  ctx.restore();
+}
+function roughCirclePathOn(x,cx,cy,R,seed,amp,edge){
+  const n=256;
+  x.beginPath();
+  for(let i=0;i<=n;i++){
+    const a=i/n*TAU;
+    const m=1+amp*(Math.sin(a*2+seed*0.7)*0.55+Math.sin(a*3+seed*1.3)*0.30+Math.sin(a*5+seed*2.1)*0.15);
+    const mm=edgeAt(edge,i,n);
+    const px=cx+Math.cos(a)*R*m*mm, py=cy+Math.sin(a)*R*m*mm;
+    i?x.lineTo(px,py):x.moveTo(px,py);
+  }
+  x.closePath();
+}
+function goldTransition(p,dir='left'){
+  const a = p<0.5 ? p*2 : (1-p)*2;
+  const x = lerp(-420,W+420,p);
+  ctx.save();
+  ctx.globalAlpha=Math.min(1,a*1.15);
+  ctx.fillStyle=C.paper; ctx.fillRect(0,0,W,H);
+  const w=520;
+  const g=ctx.createLinearGradient(x-w,0,x+w,0);
+  g.addColorStop(0,'rgba(232,206,134,0)');
+  g.addColorStop(0.38,'rgba(232,206,134,0.55)');
+  g.addColorStop(0.5,'rgba(255,246,215,0.95)');
+  g.addColorStop(0.62,'rgba(232,206,134,0.55)');
+  g.addColorStop(1,'rgba(232,206,134,0)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation='lighter'; ctx.globalAlpha*=0.8;
+  for(let i=0;i<40;i++){
+    const r=mulberry32(SEED+i);
+    const yy=r()*H, xx=x+(r()-0.5)*360;
+    ctx.fillStyle=`rgba(255,246,215,${0.12+r()*0.25})`;
+    ctx.beginPath(); ctx.arc(xx,yy,1+r()*3,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+function pageCover(p){
+  const y=H*(1-p);
+  ctx.save();
+  ctx.shadowColor='rgba(20,14,8,0.45)'; ctx.shadowBlur=50; ctx.shadowOffsetY=16;
+  ctx.fillStyle=C.paper; ctx.fillRect(-20,y,W+40,H+80);
+  ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.rect(-20,y,W+40,H+80); ctx.clip();
+  ctx.globalAlpha=0.55; ctx.drawImage(asset.paper,0,y); ctx.restore();
+  // leading edge: rough fibers + gold line
+  ctx.save(); ctx.strokeStyle='rgba(110,92,64,0.35)'; ctx.lineWidth=2;
+  ctx.beginPath();
+  for(let x=0;x<=W;x+=20){
+    const yy=y+Math.sin(x*0.02)*3+Math.sin(x*0.005+1)*2;
+    x?ctx.lineTo(x,yy):ctx.moveTo(x,yy);
+  }
+  ctx.stroke();
+  ctx.strokeStyle='rgba(201,162,39,0.5)'; ctx.lineWidth=1.2; ctx.stroke();
+  ctx.restore();
+  // fibers on edge
+  ctx.save(); ctx.globalAlpha=0.4;
+  const r=mulberry32(SEED+91);
+  for(let i=0;i<70;i++){
+    const x=r()*W, len=2+r()*10;
+    ctx.strokeStyle=`rgba(120,100,70,${0.10+r()*0.2})`;
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+(r()-0.5)*6,y-len); ctx.stroke();
+  }
+  ctx.restore();
+}
+function pageReveal(p){
+  const y=H*(1-p);
+  ctx.save();
+  ctx.shadowColor='rgba(20,14,8,0.45)'; ctx.shadowBlur=50; ctx.shadowOffsetY=16;
+  ctx.fillStyle=C.paper; ctx.fillRect(-20,-H-80,W+40,y+H+80);
+  ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.rect(-20,-H-80,W+40,y+H+80); ctx.clip();
+  ctx.globalAlpha=0.55; ctx.drawImage(asset.paper,0,-H); ctx.restore();
+  ctx.save(); ctx.strokeStyle='rgba(110,92,64,0.35)'; ctx.lineWidth=2;
+  ctx.beginPath();
+  for(let x=0;x<=W;x+=20){
+    const yy=y+Math.sin(x*0.02)*3+Math.sin(x*0.005+1)*2;
+    x?ctx.lineTo(x,yy):ctx.moveTo(x,yy);
+  }
+  ctx.stroke(); ctx.restore();
+}
+
+/* ---------------- UI mock helpers ---------------- */
+function statusDot(x,y,color,r=5){ ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,y,r,0,TAU); ctx.fill(); }
+function chip(x,y,w,h,label,active,opt={}){
+  const {size=28,alpha=1}=opt;
+  ctx.save(); ctx.globalAlpha*=alpha;
+  roundRect(x,y,w,h,h/2);
+  ctx.fillStyle=active?C.accentSoft:'rgba(255,255,255,0.28)'; ctx.fill();
+  ctx.strokeStyle=active?C.accent:C.line; ctx.lineWidth=active?1.6:1.1; ctx.stroke();
+  text(label,x+w/2,y+h/2+1,{size,weight:active?700:500,color:active?C.accent:C.muted,family:FN});
+  ctx.restore();
+}
+function button(x,y,w,h,label,opt={}){
+  const {primary=true,size=28,alpha=1,family=FS}=opt;
+  ctx.save(); ctx.globalAlpha*=alpha;
+  roundRect(x,y,w,h,Math.min(14,h/2));
+  if(primary){ ctx.fillStyle=C.accent; ctx.fill(); }
+  else { ctx.fillStyle='transparent'; ctx.fill(); ctx.strokeStyle=C.lineStrong; ctx.lineWidth=1.2; ctx.stroke(); }
+  text(label,x+w/2,y+h/2+1,{size,weight:600,color:primary?C.paper:C.text,family});
+  ctx.restore();
+}
+function tapRipple(x,y,age,color=C.accent){
+  if(age<0||age>0.65) return;
+  const p=age/0.65;
+  ctx.save(); ctx.globalAlpha=(1-p)*0.5; ctx.strokeStyle=color; ctx.lineWidth=3*(1-p)+0.5;
+  ctx.beginPath(); ctx.arc(x,y,10+p*54,0,TAU); ctx.stroke(); ctx.restore();
+}
+function drawGrainCard(x,y,w,h,r=20){
+  uiCard(x,y,w,h,{r});
+}
+function iconLock(x,y,s,color=C.gold,alpha=1){
+  ctx.save(); ctx.globalAlpha*=alpha; ctx.strokeStyle=color; ctx.lineWidth=s*0.075; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(x,y-s*0.12,s*0.22,Math.PI,0); ctx.stroke();
+  roundRect(x-s*0.3,y-s*0.1,s*0.6,s*0.52,s*0.08); ctx.stroke();
+  ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,y+s*0.08,s*0.055,0,TAU); ctx.fill();
+  ctx.restore();
+}
+function iconCheck(x,y,s,color=C.accent,alpha=1){
+  ctx.save(); ctx.globalAlpha*=alpha; ctx.strokeStyle=color; ctx.lineWidth=s*0.11; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath(); ctx.moveTo(x-s*0.3,y); ctx.lineTo(x-s*0.06,y+s*0.24); ctx.lineTo(x+s*0.34,y-s*0.24); ctx.stroke(); ctx.restore();
+}
+function iconArrow(x,y,s,color=C.muted,alpha=1,dir=1){
+  ctx.save(); ctx.globalAlpha*=alpha; ctx.strokeStyle=color; ctx.lineWidth=s*0.09; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath(); ctx.moveTo(x-s*0.3*dir,y); ctx.lineTo(x+s*0.3*dir,y); ctx.moveTo(x+s*0.08*dir,y-s*0.2); ctx.lineTo(x+s*0.3*dir,y); ctx.lineTo(x+s*0.08*dir,y+s*0.2); ctx.stroke(); ctx.restore();
+}
+
+/* ---------------- scenes ---------------- */
+const SCENES = [];
+
+function sceneDraw(i,t){
+  const s=SCENES[i]; const lt=clamp(t-s.start,0,s.end-s.start);
+  ctx.save(); s.draw(lt,t); ctx.restore();
+}
+
+/* S1 钩子 */
+function S1(lt){
+  const t=lt;
+  // near-black ink field (textured, so the first Douyin frame is not a dead black)
+  ctx.fillStyle='#0C0A08'; ctx.fillRect(0,0,W,H);
+  ctx.save(); ctx.globalAlpha=0.20; ctx.drawImage(asset.paperDark,0,0,W,H); ctx.restore();
+  const dropT=0.55;
+  if(t<dropT+0.9){
+    // falling drop
+    const p=seg(t,0.0,dropT);
+    const y=lerp(220,760,eo3(p));
+    if(t<dropT){
+      // faint cinnabar trail
+      const g=ctx.createLinearGradient(0,y-540,0,y);
+      g.addColorStop(0,'rgba(168,51,42,0)');
+      g.addColorStop(1,'rgba(168,51,42,0.45)');
+      ctx.save(); ctx.strokeStyle=g; ctx.lineWidth=2.2;
+      ctx.beginPath(); ctx.moveTo(540,y-540); ctx.lineTo(540,y-12); ctx.stroke(); ctx.restore();
+      ctx.save(); ctx.fillStyle=C.cinnabar;
+      ctx.shadowColor='rgba(168,51,42,0.75)'; ctx.shadowBlur=26;
+      ctx.beginPath(); ctx.ellipse(540,y,10+p*6,16+p*18,0,0,TAU); ctx.fill(); ctx.restore();
+    }
+  }
+  const bloom=seg(t,dropT,dropT+1.0);
+  if(bloom>0){
+    // paper bloom clipped to rough circle
+    ctx.save();
+    roughCirclePath(540,760,bloom*1500,SEED+4,0.06,null);
+    ctx.clip();
+    drawPaperBG(t,{alpha:1,mountains:true,sun:true,bamboo:true,dust:true});
+    ctx.restore();
+    // ink rim: soft bleed, not a hard band
+    ctx.save();
+    ctx.shadowColor='rgba(28,21,15,0.55)'; ctx.shadowBlur=28;
+    ctx.globalAlpha=0.30; ctx.strokeStyle='rgba(32,25,18,0.75)'; ctx.lineWidth=34;
+    roughCirclePath(540,760,bloom*1500,SEED+4,0.055,null); ctx.stroke();
+    ctx.globalAlpha=0.55; ctx.lineWidth=14;
+    roughCirclePath(540,760,bloom*1500,SEED+4,0.055,null); ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.globalAlpha=0.45; ctx.strokeStyle='rgba(201,162,39,0.55)'; ctx.lineWidth=2.2;
+    roughCirclePath(540,760,bloom*1500,SEED+4,0.055,null); ctx.stroke();
+    ctx.restore();
+    // impact rings
+    ripple(540,760,dropT,t,C.cinnabar,0.8,240);
+    ripple(540,760,dropT+0.10,t,C.gold,0.5,300);
+  }
+  // ink splat at impact
+  if(t>dropT && t<dropT+1.2){
+    const p=seg(t,dropT,dropT+1.2);
+    ctx.save(); ctx.globalAlpha=(1-p)*0.35; ctx.globalCompositeOperation='multiply';
+    const r=mulberry32(SEED+8);
+    for(let i=0;i<16;i++){
+      const a=r()*TAU, rr=(20+r()*130)*(0.4+p*0.9), sx=540+Math.cos(a)*rr, sy=760+Math.sin(a)*rr;
+      ctx.fillStyle='rgba(30,22,16,0.18)'; ctx.beginPath(); ctx.arc(sx,sy,1.5+r()*6,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+  // "一句话" writing
+  const a1=seg(t,1.05,2.15);
+  if(a1>0 && t<2.95){
+    const p=seg(t,1.05,2.35);
+    const sz=250;
+    const x=540,y=900;
+    ctx.save();
+    // clip reveal left-to-right
+    const cw=760*p;
+    ctx.beginPath(); ctx.rect(x-380,y-220,cw,440); ctx.clip();
+    inkText('一句话',x,y,sz,{color:C.ink,family:FK,weight:700,alpha:Math.min(1,0.35+a1*1.6)});
+    ctx.restore();
+    // wet brush edge at the reveal front
+    if(p>0&&p<1){
+      const bx=x-380+cw;
+      ctx.save(); ctx.globalAlpha=0.22*(1-Math.abs(p-0.5)*1.2);
+      ctx.fillStyle=C.ink;
+      ctx.beginPath(); ctx.ellipse(bx,y+10,5,46,0.08,0,TAU); ctx.fill();
+      ctx.restore();
+    }
+    // underline
+    const u=seg(t,2.15,2.55);
+    if(u>0){ ctx.save(); ctx.fillStyle=C.cinnabar; ctx.globalAlpha=0.9;
+      ctx.fillRect(540-330*u,y+150,660*u,6); ctx.restore(); }
+  }
+  // particle morph 2.55–3.75
+  const mp=seg(t,2.55,3.75);
+  if(mp>0 && t<3.9){
+    drawTextParticles(mp,t);
+  }
+  // solid "一本书"
+  const a2=seg(t,3.55,3.95);
+  if(a2>0){
+    inkText('一本书',540,900,250,{color:C.ink,family:FK,weight:700,alpha:a2});
+    const u=seg(t,3.8,4.2);
+    if(u>0){ ctx.save(); ctx.fillStyle=C.cinnabar; ctx.globalAlpha=0.95; ctx.fillRect(540-330*u,1050,660*u,7); ctx.restore(); }
+  }
+  // small line + seal
+  const a3=seg(t,4.05,4.45);
+  if(a3>0){
+    text('AI 连载 · 本地写作',540,1160,{size:40,weight:500,color:C.muted,alpha:a3,letter:6});
+    text('StefSun',540,1242,{size:26,weight:500,color:C.faint,alpha:seg(t,4.2,4.5),letter:6,family:FN});
+    seal('拾页',900,1160,150,{rot:-0.1,alpha:a3});
+    ripple(900,1160,4.35,t,C.cinnabar,0.7,220);
+  }
+  // gold dust
+  goldDust(t,0.5+0.5*seg(t,1.5,3));
+}
+function drawTextParticles(p,t){
+  const A=asset.p1, B=asset.p2; if(!A||!B) return;
+  const n=Math.min(A.length,B.length,1500);
+  const r0=mulberry32(SEED+77);
+  ctx.save(); ctx.globalCompositeOperation='source-over';
+  const hold=p>=1;
+  for(let i=0;i<n;i++){
+    const a=A[i], b=B[i];
+    const rr=r0(), ph=r0()*TAU, m=0.35+rr*1.0;
+    let x,y,k;
+    if(p<0.42){ const e=eo3(p/0.42); x=lerp(a[0],a[0]+(rr-0.5)*160,e); y=lerp(a[1],a[1]+(rr-0.5)*160,e); k=0; }
+    else if(p<0.78){ const e=eio((p-0.42)/0.36); const cx=(a[0]+b[0])/2+Math.cos(ph)*260*m, cy=(a[1]+b[1])/2+Math.sin(ph)*260*m;
+      x=(1-e)*(1-e)*a[0]+2*(1-e)*e*cx+e*e*b[0]; y=(1-e)*(1-e)*a[1]+2*(1-e)*e*cy+e*e*b[1]; k=e; }
+    else { const e=eo3((p-0.78)/0.22); x=lerp(a[0],b[0],e); y=lerp(a[1],b[1],e); k=1; }
+    const jitter=hold?0:1.2;
+    x+=Math.sin(t*2.1+ph)*jitter; y+=Math.cos(t*1.7+ph)*jitter;
+    const col=mixColor('#3B332A','#211D19',k);
+    ctx.fillStyle=col;
+    const s=1.6+ (i%5===0?0.9:0);
+    ctx.fillRect(x-s/2,y-s/2,s,s);
+  }
+  ctx.restore();
+}
+
+/* S2 起书 */
+function S2(lt){
+  const t=lt;
+  drawPaperBG(t,{mountains:true,sun:true,bamboo:true,dust:true});
+  // headline
+  const h1=seg(t,0.2,0.6), h2=seg(t,0.5,0.95);
+  text('一句话',540,220,{size:44,weight:500,color:C.muted,alpha:h1,letter:8});
+  text('铺开整个故事',540,320,{size:86,weight:700,color:C.ink,alpha:h2,letter:2});
+  // card (fades as the skeleton cards land)
+  const cp=spring(seg(t,0.15,0.8),180,24);
+  const formFade=1-seg(t,2.38,2.66);
+  if(cp>0){
+    const x=90,y=470,w=900,h=900;
+    ctx.save(); ctx.globalAlpha=Math.min(1,cp*2)*formFade; ctx.translate(0,(1-cp)*70);
+    uiCard(x,y,w,h,{r:26});
+    // header
+    text('拾页',x+40,y+52,{size:30,weight:700,color:C.ink,align:'left',family:FS});
+    text('新书 · 构思',x+120,y+52,{size:24,weight:500,color:C.faint,align:'left',family:FN});
+    hairline(x+40,y+78,x+w-40,y+78,C.line,1);
+    // label
+    text('一句话的念头',x+44,y+130,{size:24,weight:500,color:C.muted,align:'left',family:FN});
+    // textarea
+    uiCard(x+40,y+156,w-80,210,{r:14,fill:'rgba(255,255,255,0.34)',shadow:false,texture:false,stroke:C.line});
+    const demo='一个替人写信的盲人，收到一封旧信。';
+    const typed=Math.floor(seg(t,0.9,2.0)*demo.length);
+    const shown=demo.slice(0,Math.max(0,typed));
+    text(shown,x+62,y+206,{size:34,weight:500,color:C.text,align:'left',family:FS});
+    if(t<2.1){ ctx.save(); ctx.fillStyle=C.accent; ctx.globalAlpha=0.7+0.3*Math.sin(t*12);
+      ctx.fillRect(x+64+measure(shown,34,500,FS),y+186,3,40); ctx.restore(); }
+    // chips
+    text('类型',x+44,y+414,{size:24,weight:500,color:C.muted,align:'left',family:FN});
+    chip(x+104,y+390,90,48,'古言',true,{size:24});
+    chip(x+206,y+390,90,48,'悬疑',false,{size:24});
+    chip(x+308,y+390,90,48,'幻想',false,{size:24});
+    text('语气',x+44,y+486,{size:24,weight:500,color:C.muted,align:'left',family:FN});
+    chip(x+104,y+462,90,48,'克制',true,{size:24});
+    chip(x+206,y+462,90,48,'冷峻',false,{size:24});
+    text('视角',x+44,y+558,{size:24,weight:500,color:C.muted,align:'left',family:FN});
+    chip(x+104,y+534,190,48,'第三人称限知',true,{size:22});
+    chip(x+306,y+534,120,48,'第一人称',false,{size:22});
+    // button
+    const bp=seg(t,2.0,2.35);
+    button(x+40,y+640,w-80,72,'生成故事骨架',{primary:true,size:28,alpha:bp});
+    if(t>2.1&&t<2.7) tapRipple(x+w/2,y+676,t-2.1,C.paper);
+    // foot
+    text('骨架会先给几个人名、几章计划',x+44,y+760,{size:22,weight:400,color:C.faint,align:'left',family:FN});
+    ctx.restore();
+  }
+  // skeleton cards
+  const sp=seg(t,2.45,3.1);
+  if(sp>0){
+    const cards=[
+      {y:470,h:250,title:'人物',lines:['沈砚 · 替人写信的盲人','想找回自己的名字','藏着旧信的落款']},
+      {y:748,h:250,title:'世界',lines:['江南雨巷，旧信能改写记忆','信纸见水才显字','城南有家不卖书的旧书店']},
+      {y:1026,h:250,title:'前三章',lines:['雨夜来信 · 无字的落款 · 旧书店','章末钩子：信里写着他的名字']}
+    ];
+    cards.forEach((c,i)=>{
+      const p=spring(seg(t,2.45+i*0.12,2.95+i*0.12),180,25);
+      if(p<=0) return;
+      ctx.save(); ctx.globalAlpha=Math.min(1,p*1.6); ctx.translate(0,(1-p)*60);
+      uiCard(90,c.y,900,c.h,{r:22});
+      text(c.title,128,c.y+50,{size:26,weight:700,color:C.cinnabar,align:'left',family:FS});
+      hairline(128,c.y+76,952,c.y+76,C.line,1);
+      c.lines.forEach((line,j)=>text(line,128,c.y+112+j*42,{size:24,weight:400,color:C.text,align:'left',family:FN}));
+      ctx.restore();
+    });
+  }
+  // "开始写第一章" button
+  const bp2=seg(t,4.7,5.1);
+  if(bp2>0){
+    button(240,1390,600,76,'开始写第一章',{primary:true,size:30,alpha:bp2});
+    if(t>4.8&&t<5.4) tapRipple(540,1428,t-4.8,C.paper);
+    text('人物的欲望和秘密，决定后面每一章的走向',540,1510,{size:22,weight:400,color:C.faint,alpha:bp2,family:FN});
+  }
+  // small labels
+  const l=seg(t,3.3,3.8);
+  if(l>0){
+    text('人物 · 世界 · 前三章',540,1650,{size:40,weight:500,color:C.muted,alpha:l,letter:4});
+  }
+  goldDust(t,0.8);
+}
+
+/* S3 零等待 */
+function S3(lt){
+  const t=lt;
+  drawPaperBG(t,{mountains:false,sun:false,bamboo:true,dust:true});
+  // headline
+  const a1=seg(t,0.5,0.9), a2=seg(t,1.9,2.3), a3=seg(t,4.35,4.7);
+  if(a3<0.05){
+    text('你读一章',540,190,{size:82,weight:700,color:C.ink,alpha:a1,letter:2});
+    if(a2>0) text('它已备好三章',540,290,{size:74,weight:700,color:C.cinnabar,alpha:a2,letter:2});
+  } else {
+    text('零等待',540,250,{size:112,weight:700,color:C.cinnabar,alpha:a3,letter:4});
+  }
+  // reader card
+  const cp=spring(seg(t,0.2,0.85),180,25);
+  ctx.save(); ctx.globalAlpha=Math.min(1,cp*2); ctx.translate(0,(1-cp)*70);
+  uiCard(70,370,940,1260,{r:24});
+  // topbar
+  text('‹',110,414,{size:34,weight:400,color:C.muted,align:'left'});
+  text('雨夜来信',132,414,{size:28,weight:700,color:C.text,align:'left'});
+  text('第 1 章',930,414,{size:22,weight:400,color:C.faint,align:'right',family:FN});
+  hairline(70,444,1010,444,C.line,1);
+  // text
+  text('第 1 章',112,500,{size:20,weight:500,color:C.faint,align:'left',letter:4,family:FN});
+  text('雨夜来信',112,556,{size:50,weight:700,color:C.ink,align:'left'});
+  const prose=[
+    '雨落在瓦上，声音很轻。',
+    '沈砚把信纸摊平，指尖从左到右，',
+    '停在一个没有落款的句子上。',
+    '门外有人敲了三下。',
+    '他没有起身，只把信折好，',
+    '塞进袖口最里层。',
+    '信纸背面，还有一行小字。',
+    '字迹很淡，像被雨水泡过。',
+    '沈砚没有读出声。'
+  ];
+  const totalChars=prose.join('').length;
+  const stream=seg(t,0.9,4.5)*totalChars;
+  let acc=0, lastLine=0, lastX=112;
+  prose.forEach((line,i)=>{
+    const visible=clamp(stream-acc,0,line.length);
+    acc+=line.length;
+    if(visible>0){
+      text(line.slice(0,Math.floor(visible)),112,626+i*60,{size:32,weight:400,color:C.text,align:'left',family:FS,letter:1});
+      if(visible<line.length){ lastLine=i; lastX=112+Math.min(720,measure(line.slice(0,Math.floor(visible)),32,400,FS)); }
+    }
+  });
+  // caret
+  if(t>0.9&&t<4.7){
+    ctx.save(); ctx.fillStyle=C.accent; ctx.globalAlpha=0.45+0.45*Math.sin(t*10);
+    ctx.fillRect(lastX+2,626+lastLine*60-24,2,34); ctx.restore();
+  }
+  // chapter end
+  const ce=seg(t,4.5,4.8);
+  if(ce>0){
+    text('本章完',540,1240,{size:24,weight:400,color:C.faint,alpha:ce,letter:6,family:FN});
+    hairline(420,1276,660,1276,C.line,1,ce);
+    text('下一章 · 无字的落款 已就绪',540,1326,{size:26,weight:500,color:C.accent,alpha:ce,family:FN});
+  }
+  // progress
+  text('1 / 120 章',930,1520,{size:20,weight:400,color:C.faint,align:'right',family:FN});
+  ctx.save(); ctx.fillStyle=C.line; ctx.fillRect(112,1542,796,3);
+  ctx.fillStyle=C.accent; ctx.fillRect(112,1542,796*0.014,3); ctx.restore();
+  // buffer indicator
+  const bi=seg(t,4.7,5.2);
+  if(bi>0){
+    text('后台预写',112,1600,{size:22,weight:500,color:C.muted,align:'left',family:FN,alpha:bi});
+    [1,2,3].forEach((n,i)=>{
+      const p=seg(t,4.9+i*0.2,5.2+i*0.2);
+      ctx.save(); ctx.globalAlpha=bi;
+      ctx.strokeStyle=p>0?C.accent:C.lineStrong; ctx.lineWidth=1.4;
+      ctx.beginPath(); ctx.arc(230+i*58,1600,13,0,TAU); ctx.stroke();
+      if(p>0){ ctx.fillStyle=C.accent; ctx.beginPath(); ctx.arc(230+i*58,1600,8*p,0,TAU); ctx.fill(); }
+      text(String(n),230+i*58,1601,{size:14,weight:600,color:p>0?C.paper:C.muted,family:FN,alpha:p>0?1:0.7});
+      ctx.restore();
+    });
+  }
+  ctx.restore();
+  // queue cards
+  const q=[{y:470,ch:'第 2 章',at:2.35},{y:640,ch:'第 3 章',at:2.8},{y:810,ch:'第 4 章',at:3.25}];
+  q.forEach((item,i)=>{
+    const p=spring(seg(t,item.at,item.at+0.45),200,26);
+    if(p<=0) return;
+    const x=lerp(1120,668,p);
+    ctx.save();
+    uiCard(x,item.y,320,130,{r:18,fill:'rgba(251,248,242,0.97)'});
+    text(item.ch,x+28,item.y+44,{size:26,weight:700,color:C.text,align:'left'});
+    text('已就绪',x+28,item.y+88,{size:22,weight:400,color:C.muted,align:'left',family:FN});
+    iconCheck(x+270,item.y+44,26,C.accent,1);
+    statusDot(x+270,item.y+88,C.accent,5);
+    ctx.restore();
+  });
+  // seal
+  const sp=seg(t,4.9,5.25);
+  if(sp>0){
+    seal('零等待',250,1420,160,{rot:-0.12,alpha:sp});
+    ripple(250,1420,5.1,t,C.cinnabar,0.45,150);
+  }
+  // small note
+  text('读到哪儿，后面就先备好几章',540,1680,{size:26,weight:400,color:C.muted,alpha:seg(t,1.5,2.0),family:FN});
+  goldDust(t,0.6);
+}
+
+/* S4 改写 */
+function S4(lt){
+  const t=lt;
+  drawPaperBG(t,{mountains:false,sun:false,dust:true});
+  // headline
+  text('哪句不顺眼',540,200,{size:70,weight:700,color:C.ink,alpha:seg(t,0.2,0.6),letter:2});
+  text('选中，就能改',540,288,{size:78,weight:700,color:C.cinnabar,alpha:seg(t,0.6,1.0),letter:2});
+  // reader card
+  const cp=spring(seg(t,0.15,0.7),180,25);
+  ctx.save(); ctx.globalAlpha=Math.min(1,cp*2); ctx.translate(0,(1-cp)*50);
+  uiCard(60,370,960,1260,{r:24});
+  text('第 3 章',100,438,{size:20,weight:500,color:C.faint,align:'left',letter:4,family:FN});
+  text('旧书店',100,492,{size:46,weight:700,color:C.ink,align:'left'});
+  const lines=[
+    '雨停之后，沈砚去了城南。',
+    '旧书店的门半掩着，里面没有灯。',
+    '他把信纸摊平，指尖从左到右。',
+    '门外有人敲了三下。',
+    '他没有起身，只把信折好。'
+  ];
+  lines.forEach((line,i)=>text(line,100,576+i*66,{size:32,weight:400,color:C.text,align:'left',family:FS,alpha:seg(t,0.35+i*0.07,0.6+i*0.07)}));
+  // highlight over lines 2-3
+  const hp=seg(t,1.0,1.45);
+  if(hp>0){
+    ctx.save(); ctx.globalAlpha=0.9;
+    ctx.fillStyle='rgba(201,162,39,0.16)';
+    ctx.fillRect(96,660-34,820*hp,146);
+    ctx.strokeStyle='rgba(201,162,39,0.55)'; ctx.lineWidth=1.2;
+    ctx.strokeRect(96,660-34,820*hp,146);
+    ctx.restore();
+  }
+  // selection handles
+  if(hp>=1){
+    ctx.save(); ctx.fillStyle=C.accent;
+    [626,772].forEach(y=>{ ctx.beginPath(); ctx.arc(96,y,5,0,TAU); ctx.fill(); ctx.beginPath(); ctx.arc(916,y,5,0,TAU); ctx.fill(); });
+    ctx.restore();
+  }
+  // floating toolbar
+  const tb=spring(seg(t,1.5,1.95),210,26);
+  if(tb>0){
+    const x=110,y=850,w=860,h=250;
+    ctx.save(); ctx.globalAlpha=Math.min(1,tb*1.5); ctx.translate(0,(1-tb)*30);
+    uiCard(x,y,w,h,{r:20,fill:'rgba(251,248,242,0.98)'});
+    const modes=['改写','扩写','精简','语气','续写'];
+    modes.forEach((m,i)=>chip(x+24+i*104,y+22,92,46,m,i===0,{size:22}));
+    uiCard(x+24,y+84,w-48,62,{r:12,fill:'rgba(255,255,255,0.4)',shadow:false,texture:false,stroke:C.line});
+    const txt='删掉解释，只留下动作';
+    const typed=txt.slice(0,Math.floor(seg(t,2.1,2.9)*txt.length));
+    text(typed,x+44,y+116,{size:28,weight:400,color:C.text,align:'left',family:FN});
+    if(t<3.0){ ctx.save(); ctx.fillStyle=C.accent; ctx.globalAlpha=0.5+0.4*Math.sin(t*12); ctx.fillRect(x+48+measure(typed,28,400,FN),y+100,2,30); ctx.restore(); }
+    button(x+w-180,y+176,150,52,'预览',{primary:true,size:24});
+    if(t>3.0&&t<3.4) tapRipple(x+w-105,y+202,t-3.0,C.paper);
+    text('也可以直接预览，让引擎自己挑',x+30,y+202,{size:20,weight:400,color:C.faint,align:'left',family:FN});
+    ctx.restore();
+  }
+  // diff overlay
+  const dp=seg(t,3.35,3.75);
+  if(dp>0){
+    ctx.save(); ctx.globalAlpha=dp;
+    ctx.fillStyle=C.paper; ctx.fillRect(0,0,W,H);
+    drawPaperBG(t,{mountains:false,sun:false,dust:false,alpha:0.55});
+    text('改动预览',90,120,{size:34,weight:700,color:C.text,align:'left'});
+    text('第 3 章',230,121,{size:22,weight:400,color:C.faint,align:'left',family:FN});
+    text('1,842 字 → 1,906 字',990,120,{size:22,weight:400,color:C.muted,align:'right',family:FN});
+    hairline(70,156,1010,156,C.line,1);
+    // diff cards
+    const cards=[
+      {y:190,label:'03-04 改写',parts:[['他把信纸摊平。','del'],['他把信纸按在膝上，指节泛白。','add']],reason:'删掉解释，只留下动作。'},
+      {y:500,label:'03-05 改写',parts:[['门外有人敲了三下。','del'],['门响了。三下，不轻不重。','add']],reason:'把听觉信息前置。'},
+      {y:810,label:'03-06 改写',parts:[['他没有起身，只把信折好。','del'],['他没动。信纸在指间折成窄条。','add']],reason:'动作具体化。'}
+    ];
+    cards.forEach((c,i)=>{
+      const p=seg(t,3.55+i*0.18,3.85+i*0.18);
+      if(p<=0) return;
+      ctx.save(); ctx.globalAlpha*=p; ctx.translate(0,(1-p)*20);
+      uiCard(70,c.y,940,270,{r:18});
+      text(c.label,100,c.y+38,{size:20,weight:500,color:C.faint,align:'left',family:FN});
+      iconCheck(950,c.y+38,22,C.accent,1);
+      let yy=c.y+98;
+      c.parts.forEach(([s,type])=>{
+        ctx.font=font(32,400,FS); const w=ctx.measureText(s).width;
+        text(s,100,yy,{size:32,weight:400,color:type==='add'?'#4E6A52':'#8B4A3B',align:'left',family:FS,alpha:type==='del'?0.75:1});
+        if(type==='del'){
+          ctx.save(); ctx.strokeStyle='rgba(139,74,59,0.75)'; ctx.lineWidth=2;
+          ctx.beginPath(); ctx.moveTo(100,yy+2); ctx.lineTo(100+w,yy+2); ctx.stroke(); ctx.restore();
+        } else {
+          ctx.save(); ctx.fillStyle='rgba(78,106,82,0.12)'; ctx.fillRect(96,yy-25,w+8,50); ctx.restore();
+        }
+        yy+=56;
+      });
+      text(c.reason,100,c.y+232,{size:20,weight:400,color:C.faint,align:'left',family:FN});
+      ctx.restore();
+    });
+    // version history
+    const vp=seg(t,4.55,4.9);
+    if(vp>0){
+      ctx.save(); ctx.globalAlpha*=vp;
+      uiCard(70,1110,940,170,{r:18,fill:'rgba(251,248,242,0.92)'});
+      text('版本历史',100,1150,{size:22,weight:600,color:C.cinnabar,align:'left',family:FS});
+      text('v12 当前 · v11 10:32 自动保存',100,1200,{size:24,weight:400,color:C.text,align:'left',family:FN});
+      text('每次改写都留底，旧稿不会丢',100,1242,{size:18,weight:400,color:C.faint,align:'left',family:FN});
+      button(830,1132,150,46,'回滚',{primary:false,size:22});
+      ctx.restore();
+    }
+    // foot
+    const fp=seg(t,4.8,5.2);
+    text('已选 3 / 3 处',90,1340,{size:24,weight:400,color:C.muted,alpha:fp,align:'left',family:FN});
+    button(740,1316,240,64,'全部应用',{primary:true,size:26,alpha:fp});
+    if(t>5.1&&t<5.5) tapRipple(860,1348,t-5.1,C.paper);
+    // applied toast
+    const ap=seg(t,5.5,5.8);
+    if(ap>0){
+      uiCard(300,1430,480,66,{r:33,fill:'rgba(251,248,242,0.98)'});
+      iconCheck(344,1463,24,C.accent,ap);
+      text('改动已经落到正文里',400,1463,{size:24,weight:500,color:C.text,align:'left',alpha:ap,family:FN});
+    }
+    text('改写不会覆盖旧稿 · 随时可以回滚',540,1570,{size:24,weight:400,color:C.faint,alpha:fp,letter:2,family:FN});
+    ctx.restore();
+  }
+  // small line (only before the diff sheet takes over)
+  if(dp<0.1) text('逐段采纳 · 旧稿随时回滚',540,1680,{size:28,weight:500,color:C.muted,alpha:seg(t,1.0,1.5),letter:3});
+  goldDust(t,0.5);
+}
+
+/* S5 面板 */
+function S5(lt){
+  const t=lt;
+  drawPaperBG(t,{mountains:false,sun:false,dust:true});
+  // dim reader
+  ctx.save(); ctx.fillStyle='rgba(247,244,236,0.55)'; ctx.fillRect(0,0,W,H); ctx.restore();
+  // vertical headline
+  const v1=seg(t,0.3,0.8), v2=seg(t,0.9,1.4);
+  vtext('故事往哪拐',160,360,92,{color:C.ink,alpha:v1,gap:1.1,family:FK});
+  vtext('你说了算',300,560,92,{color:C.cinnabar,alpha:v2,gap:1.1,family:FK});
+  // panel
+  const pp=spring(seg(t,0.15,0.75),180,25);
+  if(pp>0){
+    const x=lerp(1120,520,pp), w=560;
+    ctx.save();
+    ctx.shadowColor='rgba(20,14,8,0.22)'; ctx.shadowBlur=40; ctx.shadowOffsetX=-20;
+    ctx.fillStyle=C.surface; ctx.fillRect(x,0,w,H);
+    ctx.restore();
+    ctx.save(); ctx.beginPath(); ctx.rect(x,0,w,H); ctx.clip();
+    ctx.globalAlpha=0.3; ctx.drawImage(asset.paperCard,0,0,W,H); ctx.globalAlpha=1;
+    hairline(x,0,x,H,C.line,1);
+    // scroll content (clipped under the fixed header)
+    // panel is laid out to fit one sheet, so it holds still instead of drifting up and leaving a void
+    const scroll=eio(seg(t,1.2,3.2))*26;
+    ctx.save(); ctx.beginPath(); ctx.rect(x,132,w,H-132); ctx.clip();
+    ctx.save(); ctx.translate(0,-scroll);
+    // 本章
+    text('本章',x+40,180,{size:22,weight:500,color:C.faint,align:'left',letter:4,family:FN});
+    chip(x+w-140,156,100,38,'写作中',false,{size:18});
+    ['· 沈砚收到一封写给自己的旧信','· 信纸见水显出第二层字','· 门外的人知道他的真名'].forEach((s,i)=>text(s,x+40,228+i*40,{size:24,weight:400,color:C.text,align:'left',family:FN}));
+    text('钩子：信里写着他的名字',x+40,372,{size:22,weight:400,color:C.muted,align:'left',family:FN});
+    // 指令
+    text('指令',x+40,450,{size:22,weight:500,color:C.faint,align:'left',letter:4,family:FN});
+    ['本章','后续3章','本卷','全书'].forEach((s,i)=>chip(x+40+i*112,480,102,42,s,i===1,{size:20}));
+    uiCard(x+40,540,w-80,120,{r:14,fill:'rgba(255,255,255,0.36)',shadow:false,texture:false});
+    text('让配角先发现线索',x+60,580,{size:24,weight:400,color:C.text,align:'left',family:FN});
+    text('会取消并重排受影响的章节',x+60,622,{size:18,weight:400,color:C.faint,align:'left',family:FN});
+    button(x+w-170,680,130,46,'下达',{primary:true,size:22});
+    if(t>2.7&&t<3.1) tapRipple(x+w-105,703,t-2.7,C.paper);
+    // 节拍
+    text('三个节拍',x+40,780,{size:22,weight:500,color:C.faint,align:'left',letter:4,family:FN});
+    ['让信在雨里被撕开','让旧书店老板认错人','让沈砚第一次说谎'].forEach((s,i)=>{
+      const p=seg(t,3.0+i*0.15,3.3+i*0.15);
+      if(p<=0) return;
+      uiCard(x+40,812+i*94,w-80,80,{r:14,fill:'rgba(255,255,255,0.36)',shadow:false});
+      text(String(i+1),x+62,852+i*94,{size:20,weight:700,color:C.cinnabar,family:FN});
+      text(s,x+98,852+i*94,{size:22,weight:400,color:C.text,align:'left',family:FN});
+    });
+    // 人物
+    text('人物',x+40,1130,{size:22,weight:500,color:C.faint,align:'left',letter:4,family:FN});
+    text('沈砚　城南 · 等待 · 握着一封旧信',x+40,1172,{size:22,weight:400,color:C.text,align:'left',family:FN});
+    text('顾南枝　旧书店 · 警觉 · 在找一个人',x+40,1214,{size:22,weight:400,color:C.text,align:'left',family:FN});
+    // 问题
+    text('问题',x+40,1290,{size:22,weight:500,color:C.faint,align:'left',letter:4,family:FN});
+    const issues=[['人名','“沈砚”与第 2 章写法不一致'],['时间','雨停时间早了一刻'],['伏笔','旧信的第二层字尚未回收']];
+    issues.forEach(([tag,s],i)=>{
+      const p=seg(t,4.4+i*0.2,4.7+i*0.2);
+      if(p<=0) return;
+      text(tag,x+40,1332+i*54,{size:18,weight:600,color:C.cinnabar,align:'left',family:FN,alpha:p});
+      text(s,x+100,1332+i*54,{size:20,weight:400,color:C.muted,align:'left',family:FN,alpha:p});
+      iconCheck(x+w-60,1332+i*54,22,C.accent,p);
+    });
+    // 影响范围
+    const ip=seg(t,5.15,5.55);
+    if(ip>0){
+      text('影响范围',x+40,1502,{size:22,weight:500,color:C.faint,align:'left',letter:4,family:FN,alpha:ip});
+      text('第 13–15 章将自动重排，旧版本随时可回滚',x+40,1542,{size:20,weight:400,color:C.muted,align:'left',family:FN,alpha:ip});
+      ['第 13 章','第 14 章','第 15 章'].forEach((s,i)=>chip(x+40+i*124,1564,114,44,s,false,{size:18,alpha:ip}));
+    }
+    ctx.restore();
+    // scan line
+    const scan=seg(t,5.6,6.2);
+    if(scan>0&&scan<1){
+      const sy=lerp(120,1800,scan);
+      ctx.save(); ctx.globalAlpha=0.32; ctx.strokeStyle=C.gold; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(x+10,sy); ctx.lineTo(x+w-10,sy); ctx.stroke();
+      const sg=ctx.createLinearGradient(0,sy-34,0,sy);
+      sg.addColorStop(0,'rgba(201,162,39,0)'); sg.addColorStop(1,'rgba(201,162,39,0.10)');
+      ctx.globalAlpha=1; ctx.fillStyle=sg; ctx.fillRect(x+10,sy-34,w-20,34); ctx.restore();
+    }
+    ctx.restore();
+    ctx.restore();
+    // fixed header band
+    ctx.fillStyle=C.surface; ctx.fillRect(x,0,w,132);
+    ctx.save(); ctx.beginPath(); ctx.rect(x,0,w,132); ctx.clip();
+    ctx.globalAlpha=0.30; ctx.drawImage(asset.paperCard,0,0,W,H); ctx.restore();
+    text('写作',x+40,80,{size:30,weight:700,color:C.text,align:'left'});
+    text('编辑',x+150,80,{size:30,weight:400,color:C.faint,align:'left'});
+    text('×',x+w-40,80,{size:34,weight:300,color:C.muted,align:'right'});
+    hairline(x+20,120,x+w-20,120,C.lineStrong,1.2);
+    ctx.restore();
+  }
+  // left margin note + seal
+  vtext('逐段改 · 留旧稿',138,1000,26,{color:C.faint,alpha:seg(t,2.1,2.5),gap:1.32,family:FN,weight:400});
+  seal('改稿',244,1470,120,{rot:-0.07,alpha:seg(t,5.7,6.1)});
+  goldDust(t,0.5);
+}
+
+/* S5B 后续方向 */
+function S5B(lt){
+  const t=lt;
+  drawPaperBG(t,{mountains:false,sun:false,dust:true});
+  // eyebrow + headline
+  text('续 写 · 方 向 随 时 改',540,152,{size:24,weight:500,color:C.faint,alpha:seg(t,0.2,0.5),letter:8,family:FN});
+  text('已经写的，一字不动',540,238,{size:66,weight:700,color:C.ink,alpha:seg(t,0.35,0.75),letter:2});
+  text('第 13 章往后，换一条路也行',540,306,{size:30,weight:400,color:C.muted,alpha:seg(t,0.85,1.25),letter:2,family:FN});
+  // locked block
+  const lp=spring(seg(t,0.55,1.0),180,25);
+  if(lp>0){
+    ctx.save(); ctx.globalAlpha=Math.min(1,lp*1.6); ctx.translate(0,(1-lp)*40);
+    uiCard(90,370,900,180,{r:20});
+    text('已定稿 · 第 1–12 章',130,430,{size:34,weight:700,color:C.text,align:'left'});
+    text('正文、伏笔、人物关系都已落纸',130,478,{size:22,weight:400,color:C.faint,align:'left',family:FN});
+    iconLock(918,432,30,C.accent,1);
+    text('锁定',918,488,{size:18,weight:600,color:C.accent,letter:2,family:FN});
+    ctx.restore();
+  }
+  // connector
+  const con=seg(t,1.0,1.45);
+  if(con>0){
+    ctx.save(); ctx.strokeStyle=C.lineStrong; ctx.globalAlpha=0.45*con; ctx.lineWidth=2; ctx.setLineDash([6,9]);
+    ctx.beginPath(); ctx.moveTo(540,556); ctx.lineTo(540,664); ctx.stroke(); ctx.restore();
+    text('从这里接着往下写',592,610,{size:20,weight:400,color:C.faint,align:'left',alpha:con*0.9,family:FN});
+  }
+  // pending block
+  const sel=seg(t,3.05,3.35)>0.5;
+  const dp=spring(seg(t,1.25,1.7),180,25);
+  if(dp>0){
+    ctx.save(); ctx.globalAlpha=Math.min(1,dp*1.6);
+    roundRect(90,676,900,152,18);
+    ctx.fillStyle='rgba(251,248,242,0.55)'; ctx.fill();
+    ctx.strokeStyle=sel?C.cinnabar:C.lineStrong; ctx.lineWidth=1.6; ctx.setLineDash(sel?[]:[8,7]); ctx.stroke(); ctx.setLineDash([]);
+    text(sel?'第 13–15 章 · 按新方向续写':'第 13–15 章',130,730,{size:32,weight:700,color:sel?C.cinnabar:C.text,align:'left'});
+    text(sel?'已写内容原样保留':'方向待定 · 等你一句话',130,778,{size:22,weight:400,color:sel?C.accent:C.faint,align:'left',family:FN});
+    ['13','14','15'].forEach((n,i)=>{
+      const done=seg(t,4.15+i*0.12,4.45+i*0.12);
+      const bx=706+i*88, by=706;
+      roundRect(bx,by,70,84,10);
+      ctx.fillStyle=done>0?'rgba(168,51,42,0.10)':'rgba(255,255,255,0.32)'; ctx.fill();
+      ctx.strokeStyle=done>0?C.cinnabar:C.line; ctx.lineWidth=1.2; ctx.stroke();
+      text(n,bx+35,by+34,{size:24,weight:700,color:done>0?C.cinnabar:C.muted,family:FN});
+      text('章',bx+35,by+62,{size:14,weight:400,color:C.faint,family:FN});
+      iconCheck(bx+56,by+14,14,C.accent,done);
+    });
+    ctx.restore();
+  }
+  // direction options
+  const opts=['让顾南枝先开口','让旧信落到第三人手里','让雨停得更晚'];
+  opts.forEach((s,i)=>{
+    const p=spring(seg(t,1.9+i*0.12,2.3+i*0.12),190,24);
+    if(p<=0) return;
+    const y=866+i*118, chosen=sel&&i===1, dim=sel&&i!==1;
+    ctx.save(); ctx.globalAlpha=Math.min(1,p)*(dim?0.38:1);
+    uiCard(90,y,900,104,{r:16,fill:chosen?'rgba(168,51,42,0.07)':C.surface,stroke:chosen?C.cinnabar:C.line,shadow:!chosen});
+    text(String(i+1),134,y+52,{size:22,weight:700,color:chosen?C.cinnabar:C.faint,family:FN});
+    text(s,182,y+52,{size:30,weight:chosen?700:500,color:chosen?C.cinnabar:C.text,align:'left',family:FS});
+    if(chosen) iconCheck(936,y+52,24,C.accent,1);
+    ctx.restore();
+  });
+  if(t>2.95&&t<3.6) tapRipple(936,1036,t-2.95,C.cinnabar);
+  // rewriting beat (fills the wait between choosing and the result)
+  const rw=seg(t,3.3,3.6)*(1-seg(t,4.2,4.4));
+  if(rw>0){
+    const pr=seg(t,3.4,4.45);
+    text('正在按新方向续写第 13–15 章',540,1320,{size:28,weight:500,color:C.muted,alpha:rw,letter:2,family:FS});
+    ctx.save(); ctx.globalAlpha=rw;
+    ctx.fillStyle=C.line; ctx.fillRect(360,1372,360,4);
+    ctx.fillStyle=C.accent; ctx.fillRect(360,1372,360*pr,4);
+    ctx.restore();
+  }
+  // result
+  const rp=spring(seg(t,4.6,5.05),180,25);
+  if(rp>0){
+    ctx.save(); ctx.globalAlpha=Math.min(1,rp*1.6); ctx.translate(0,(1-rp)*30);
+    uiCard(90,1244,900,150,{r:18,fill:'rgba(233,239,228,0.85)',stroke:'rgba(78,106,82,0.35)'});
+    iconCheck(152,1296,30,C.accent,1);
+    text('第 13–15 章 · 已按新方向续写',192,1290,{size:28,weight:700,color:C.text,align:'left'});
+    text('已写 12 章 · 0 字改动 · 旧稿随时可回滚',192,1336,{size:21,weight:400,color:C.muted,align:'left',family:FN});
+    ctx.restore();
+  }
+  // bottom line
+  text('改后面，不动前面。',540,1500,{size:54,weight:700,color:C.ink,alpha:seg(t,5.3,5.7),letter:2});
+  text('故事怎么走，你随时说了算',540,1570,{size:26,weight:400,color:C.muted,alpha:seg(t,5.9,6.3),letter:3,family:FN});
+  seal('续写',918,1470,110,{rot:-0.09,alpha:seg(t,6.1,6.5)});
+  goldDust(t,0.4);
+}
+
+/* S6 阅读 */
+function S6(lt){
+  const t=lt;
+  // theme mix
+  const themes=[
+    {bg:C.paper,text:C.text,mut:C.muted,acc:C.accent,surf:C.surface,name:'纸'},
+    {bg:C.white,text:C.whiteText,mut:'#5C5C58',acc:'#6B5A48',surf:'#FAFAF8',name:'白'},
+    {bg:C.sage,text:C.sageText,mut:'#5A665A',acc:C.sageAccent,surf:'#EFF4EB',name:'豆沙绿'},
+    {bg:C.night,text:C.nightText,mut:C.nightMuted,acc:'#B39B7C',surf:C.nightSurface,name:'夜'}
+  ];
+  const k=Math.min(3,Math.floor(t/1.45));
+  const kp=seg(t,(k+1)*1.45-0.55,(k+1)*1.45);
+  const a=themes[k], b=themes[Math.min(3,k+1)];
+  const p=(k>=3)?0:kp;
+  const bg=mixColor(a.bg,b.bg,p), ink=mixColor(a.text,b.text,p), mut=mixColor(a.mut,b.mut,p), acc=mixColor(a.acc,b.acc,p), surf=mixColor(a.surf,b.surf,p);
+  // TOC drawer: opens over the light themes, closes before 夜 so the night page reads clean
+  const open=spring(seg(t,2.05,2.45),200,26);
+  const close=spring(seg(t,3.25,3.65),200,26);
+  const tp=Math.max(0,Math.min(1,open-close));
+  const dx=300*tp; // reading column steps aside for the TOC drawer
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+  // material, without washing out the page
+  ctx.save(); ctx.globalAlpha=k===3?0.16:0.22; ctx.globalCompositeOperation='multiply'; ctx.drawImage(asset.paper,0,0,W,H); ctx.restore();
+  if(k===3){ goldSun(880,360,420,0.24); }
+  // headline + theme chips
+  text('纸 · 白 · 豆沙绿 · 夜',540,140,{size:32,weight:400,color:mut,letter:4,family:FN,alpha:0.95});
+  const hy=230;
+  themes.forEach((th,i)=>{
+    const cx=270+i*180;
+    ctx.save();
+    roundRect(cx-46,hy-26,92,52,26); ctx.fillStyle=th.bg; ctx.fill();
+    ctx.strokeStyle=(i===k)?C.gold:C.lineStrong; ctx.lineWidth=(i===k)?2.4:1; ctx.stroke();
+    text(th.name,cx,hy+1,{size:24,weight:600,color:th.text,family:FS});
+    ctx.restore();
+  });
+  // page card (no cream texture: it would grey out the night theme)
+  uiCard(60,310,960,1290,{r:20,fill:surf,stroke:'rgba(42,42,40,0.10)',shadow:true,texture:false});
+  // topbar
+  text('第 12 章',100,376,{size:20,weight:500,color:mut,align:'left',letter:3,family:FN});
+  text('目录',960,376,{size:22,weight:500,color:mut,align:'right',family:FN});
+  hairline(90,404,990,404,'rgba(42,42,40,0.10)',1);
+  // chapter title
+  text('雨停之后',100+dx,482,{size:56,weight:700,color:ink,align:'left'});
+  // prose with size animation
+  const fs=Math.round(lerp(32,40,eio(seg(t,0.2,2.0))));
+  const indent=lerp(0,fs*2,eio(seg(t,2.2,2.8)));
+  const lines=[
+    '雨停之后，沈砚去了城南。',
+    '旧书店的门半掩着，里面没有灯。',
+    '他把那封信放在柜台上，',
+    '纸面渐渐浮出第二层字。',
+    '那不是他的笔迹，',
+    '却写着他从未告诉过别人的名字。',
+    '他抬头，看见柜台后站着一个人。',
+    '那人问他：你终于来了？',
+    '沈砚没有回答。'
+  ];
+  lines.forEach((line,i)=>{
+    const pp=seg(t,0.55+i*0.13,0.85+i*0.13);
+    const ind=(i===0||i===6)?indent*(1-tp):0;
+    text(line,100+ind+dx,580+i*fs*1.72,{size:fs,weight:400,color:ink,align:'left',family:FS,alpha:pp});
+  });
+  // chapter end
+  const ce=seg(t,2.2,2.6);
+  if(ce>0){
+    text('本章完',540,1370,{size:22,weight:400,color:mut,alpha:ce*0.9,letter:6,family:FN});
+    text('下一章 · 旧书店',540,1414,{size:24,weight:500,color:acc,alpha:ce,family:FN});
+  }
+  // slider
+  const sy=1490;
+  text('字号',100,sy,{size:20,weight:500,color:mut,align:'left',family:FN});
+  ctx.save(); ctx.strokeStyle='rgba(120,110,95,0.28)'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(170,sy); ctx.lineTo(420,sy); ctx.stroke();
+  ctx.fillStyle=acc; ctx.beginPath(); ctx.arc(lerp(170,420,seg(t,0.3,1.8)),sy,11,0,TAU); ctx.fill(); ctx.restore();
+  text('宋体',500,sy,{size:20,weight:500,color:mut,align:'left',family:FN});
+  text('首行缩进',650,sy,{size:20,weight:500,color:mut,align:'left',family:FN});
+  text('目录',840,sy,{size:20,weight:500,color:mut,align:'left',family:FN});
+  // progress
+  text('第 12 章 / 共 120 章',960,1550,{size:20,weight:400,color:mut,align:'right',family:FN,alpha:0.8});
+  if(tp>0){
+    const tx=lerp(-340,60,tp);
+    // light paper scrim: the drawer floats above the page instead of darkening it
+    ctx.save(); ctx.globalAlpha=(k===3?0.5:0.24)*tp; ctx.fillStyle=k===3?'#000000':'#F7F4EC'; ctx.fillRect(60,310,960,1290); ctx.restore();
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,0.22)'; ctx.shadowBlur=36;
+    ctx.fillStyle=surf; ctx.fillRect(tx,310,300,1290);
+    ctx.restore();
+    hairline(tx+300,310,tx+300,1600,C.line,1,0.6);
+    text('目录',tx+30,376,{size:20,weight:500,color:mut,align:'left',letter:4,family:FN});
+    const chs=['10 雨夜之前','11 无字的落款','12 雨停之后','13 旧书店','14 第二层字'];
+    chs.forEach((c,i)=>{
+      const yy=440+i*74;
+      if(i===2){ ctx.save(); ctx.fillStyle=k===3?'rgba(179,155,124,0.14)':C.accentSoft; ctx.fillRect(tx+14,yy-30,272,58); ctx.restore(); }
+      text(c,tx+32,yy,{size:22,weight:i===2?700:400,color:i===2?ink:mut,align:'left',family:FN});
+    });
+  }
+  // big line
+  const bl=seg(t,4.7,5.2);
+  if(bl>0){
+    text('读到忘了时间',540,1690,{size:72,weight:700,color:k===3?C.goldLight:C.ink,alpha:bl,letter:3});
+  }
+  // night warm lamp
+  if(k===3){ goldSun(860,460,260,0.16); }
+  if(k<3) goldDust(t,0.3);
+}
+
+/* S7 本地与模型 */
+function S7(lt){
+  const t=lt;
+  // dark paper
+  ctx.fillStyle=C.night; ctx.fillRect(0,0,W,H);
+  ctx.save(); ctx.globalAlpha=0.5; ctx.globalCompositeOperation='screen'; ctx.drawImage(asset.paperDark,0,0,W,H); ctx.restore();
+  // subtle ink
+  ctx.save(); ctx.globalAlpha=0.25; ctx.globalCompositeOperation='multiply'; ctx.drawImage(asset.inkFull,0,0,W,H); ctx.restore();
+  goldDust(t,0.9);
+  // headline
+  text('数据在你手里',540,250,{size:88,weight:700,color:C.goldLight,alpha:seg(t,0.3,0.8),letter:3});
+  text('正文 · 设定 · 旧稿 · 密钥',540,330,{size:32,weight:400,color:'rgba(201,199,194,0.75)',alpha:seg(t,0.6,1.0),letter:4,family:FN});
+  // lock seal
+  const lp=spring(seg(t,0.8,1.4),180,24);
+  if(lp>0){
+    ctx.save(); ctx.globalAlpha=Math.min(1,lp*1.5); ctx.translate(0,(1-lp)*40);
+    // seal square
+    roundRect(440,430,200,200,24); ctx.fillStyle='rgba(201,162,39,0.08)'; ctx.fill();
+    ctx.strokeStyle='rgba(201,162,39,0.55)'; ctx.lineWidth=2; ctx.stroke();
+    iconLock(540,540,90,C.goldLight,1);
+    text('本机',540,600,{size:22,weight:600,color:C.goldLight,letter:6,family:FS});
+    ctx.restore();
+  }
+  // data labels
+  const labels=[
+    {x:120,y:700,t:'本机 SQLite',s:'数据不经过第三方服务器'},
+    {x:620,y:700,t:'不上传',s:'正文与设定只在本地'},
+    {x:120,y:800,t:'可离线',s:'内置引擎无需联网'},
+    {x:620,y:800,t:'可迁移',s:'设置里打开数据目录'}
+  ];
+  labels.forEach((L,i)=>{
+    const p=seg(t,1.4+i*0.12,1.7+i*0.12);
+    if(p<=0) return;
+    ctx.save(); ctx.globalAlpha=p;
+    text(L.t,L.x,L.y,{size:26,weight:600,color:C.goldLight,align:'left',family:FS});
+    text(L.s,L.x,L.y+32,{size:18,weight:400,color:'rgba(201,199,194,0.6)',align:'left',family:FN});
+    ctx.restore();
+  });
+  // network
+  const np=seg(t,2.6,3.4);
+  if(np>0){
+    const cx=540,cy=1180;
+    // center node
+    ctx.save(); ctx.globalAlpha=Math.min(1,np*1.5);
+    roundRect(cx-90,cy-44,180,88,44); ctx.fillStyle='rgba(201,162,39,0.10)'; ctx.fill();
+    ctx.strokeStyle=C.gold; ctx.lineWidth=1.8; ctx.stroke();
+    text('拾页',cx,cy+2,{size:32,weight:700,color:C.goldLight,letter:4});
+    ctx.restore();
+    const nodes=[
+      {x:180,y:1000,t:'内置引擎'},
+      {x:820,y:1000,t:'DeepSeek'},
+      {x:180,y:1360,t:'通义千问'},
+      {x:820,y:1360,t:'Kimi'},
+      {x:540,y:1510,t:'Ollama'}
+    ];
+    nodes.forEach((n,i)=>{
+      const p=seg(t,2.9+i*0.16,3.3+i*0.16);
+      if(p<=0) return;
+      // line
+      ctx.save(); ctx.globalAlpha=p*0.7; ctx.strokeStyle='rgba(201,162,39,0.6)'; ctx.lineWidth=1.6;
+      const ex=lerp(cx,n.x,p), ey=lerp(cy,n.y,p);
+      ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(ex,ey); ctx.stroke();
+      ctx.fillStyle=C.goldLight; ctx.beginPath(); ctx.arc(ex,ey,4,0,TAU); ctx.fill();
+      ctx.restore();
+      // chip
+      ctx.save(); ctx.globalAlpha=p;
+      const w=180,h=54;
+      roundRect(n.x-w/2,n.y-h/2,w,h,27); ctx.fillStyle='rgba(255,255,255,0.04)'; ctx.fill();
+      ctx.strokeStyle='rgba(201,162,39,0.45)'; ctx.lineWidth=1.2; ctx.stroke();
+      text(n.t,n.x,n.y+2,{size:22,weight:500,color:C.nightText,letter:1,family:FS});
+      ctx.restore();
+    });
+  }
+  // bottom lines
+  text('不联网，也能写',540,1610,{size:62,weight:700,color:C.goldLight,alpha:seg(t,4.6,5.0),letter:3});
+  text('想更强，接上你自己的模型 · 兼容 OpenAI 接口',540,1680,{size:24,weight:400,color:'rgba(201,199,194,0.7)',alpha:seg(t,5.0,5.4),family:FN});
+  text('API Key 只存本机',540,1730,{size:20,weight:400,color:'rgba(232,206,134,0.6)',alpha:seg(t,5.4,5.8),family:FN});
+  // seal
+  const sp=seg(t,5.8,6.2);
+  if(sp>0) seal('本地',900,480,120,{rot:0.1,alpha:sp});
+  goldSun(540,1180,420,0.10);
+}
+
+/* S8 书架 */
+function S8(lt){
+  const t=lt;
+  drawPaperBG(t,{mountains:true,sun:true,bamboo:false,dust:true});
+  text('拾页',90,170,{size:52,weight:700,color:C.ink,align:'left',letter:4});
+  text('本地连载写作',90,208,{size:20,weight:400,color:C.faint,align:'left',letter:2,family:FN});
+  text('书架 · 6 本',90,262,{size:20,weight:400,color:C.muted,align:'left',family:FN});
+  text('＋ 新建一本书',990,180,{size:22,weight:500,color:C.accent,align:'right',family:FS});
+  // headline (swaps to the export line at the end)
+  const h1=seg(t,1.35,1.8), h2=seg(t,4.85,5.2);
+  if(h2<0.05) text('一本，两本，整个书架',540,330,{size:48,weight:700,color:C.ink,alpha:h1,letter:1});
+  else text('写完，导出带走',540,330,{size:52,weight:700,color:C.cinnabar,alpha:h2,letter:3});
+  const books=[
+    {x:90,y:400,t:'长夜写信人',g:'古言',c:0,ch:120,wd:'32.6 万字'},
+    {x:590,y:400,t:'山河故人',g:'现实',c:1,ch:96,wd:'24.1 万字'},
+    {x:90,y:850,t:'雾中灯塔',g:'悬疑',c:2,ch:74,wd:'18.7 万字'},
+    {x:590,y:850,t:'旧书店',g:'都市',c:3,ch:58,wd:'14.2 万字'},
+    {x:90,y:1300,t:'雨巷',g:'青春',c:4,ch:41,wd:'9.8 万字'},
+    {x:590,y:1300,t:'归舟',g:'武侠',c:5,ch:63,wd:'16.5 万字'}
+  ];
+  const covers=['#EFE6D4','#E6DCC8','#E9DFCE','#F1E8D7','#E4DAC6','#EBE1CF'];
+  books.forEach((b,i)=>{
+    const p=spring(seg(t,0.25+i*0.10,0.75+i*0.10),190,25);
+    if(p<=0) return;
+    ctx.save(); ctx.globalAlpha=Math.min(1,p*1.6); ctx.translate(0,(1-p)*90);
+    const w=400,h=380;
+    ctx.save(); ctx.shadowColor='rgba(40,30,18,0.16)'; ctx.shadowBlur=28; ctx.shadowOffsetY=12;
+    roundRect(b.x,b.y,w,h,8); ctx.fillStyle=covers[b.c]; ctx.fill(); ctx.restore();
+    ctx.strokeStyle='rgba(42,42,40,0.22)'; ctx.lineWidth=1.2; roundRect(b.x,b.y,w,h,8); ctx.stroke();
+    // spine
+    ctx.fillStyle='rgba(84,64,44,0.10)'; ctx.fillRect(b.x,b.y,12,h);
+    ctx.fillStyle='rgba(168,51,42,0.55)'; ctx.fillRect(b.x+12,b.y,2,h);
+    // inner frame
+    ctx.strokeStyle='rgba(42,42,40,0.12)'; ctx.lineWidth=1; ctx.strokeRect(b.x+30,b.y+22,w-52,h-44);
+    text(b.g,b.x+44,b.y+52,{size:18,weight:400,color:C.muted,align:'left',letter:4,family:FN});
+    // title vertical
+    vtext(b.t,b.x+w-64,b.y+76,48,{color:C.ink,alpha:1,gap:1.14,family:FS});
+    // small seal (top-right, clear of the title)
+    ctx.fillStyle='rgba(168,51,42,0.16)'; ctx.fillRect(b.x+w-66,b.y+36,26,26);
+    ctx.strokeStyle='rgba(168,51,42,0.50)'; ctx.lineWidth=1; ctx.strokeRect(b.x+w-66,b.y+36,26,26);
+    ctx.fillStyle=C.accentSoft; ctx.fillRect(b.x+44,b.y+h-104,56,3);
+    text('已写 '+b.ch+' 章',b.x+44,b.y+h-66,{size:18,weight:400,color:C.faint,align:'left',family:FN});
+    text(b.wd,b.x+44,b.y+h-36,{size:18,weight:400,color:C.faint,align:'left',family:FN});
+    ctx.restore();
+  });
+  // export sheet
+  const mp=spring(seg(t,3.3,3.8),180,25);
+  const mfade=1-seg(t,4.75,4.95);
+  if(mp>0 && mfade>0){
+    const y=lerp(1920,1400,mp);
+    ctx.save(); ctx.globalAlpha=Math.min(1,mp*2)*mfade;
+    ctx.shadowColor='rgba(20,14,8,0.22)'; ctx.shadowBlur=50;
+    roundRect(60,y,960,400,26); ctx.fillStyle=C.surface; ctx.fill(); ctx.restore();
+    ctx.save(); ctx.globalAlpha=Math.min(1,mp*2)*mfade;
+    roundRect(60,y,960,400,26); ctx.strokeStyle=C.line; ctx.lineWidth=1.2; ctx.stroke();
+    ctx.fillStyle='rgba(42,42,40,0.16)'; ctx.beginPath(); ctx.roundRect(500,y+16,80,5,3); ctx.fill();
+    text('导出这本书',100,y+62,{size:26,weight:700,color:C.text,align:'left'});
+    hairline(90,y+92,990,y+92,C.line,1);
+    text('TXT 纯文本',100,y+134,{size:24,weight:500,color:C.text,align:'left',family:FN});
+    text('全部章节 · 带标题',100,y+168,{size:18,weight:400,color:C.faint,align:'left',family:FN});
+    text('Markdown',100,y+222,{size:24,weight:500,color:C.text,align:'left',family:FN});
+    text('保留分章与段落',100,y+256,{size:18,weight:400,color:C.faint,align:'left',family:FN});
+    hairline(90,y+286,990,y+286,C.line,1,0.7);
+    text('删除这本书',100,y+330,{size:22,weight:400,color:C.cinnabar,align:'left',family:FN});
+    iconArrow(950,y+134,24,C.muted,1,1);
+    iconArrow(950,y+222,24,C.muted,1,1);
+    if(t>3.45&&t<3.85) tapRipple(300,y+134,t-3.45,C.accent);
+    ctx.restore();
+  }
+  // export success
+  const ep=seg(t,4.6,4.95);
+  if(ep>0){
+    uiCard(280,1240,520,100,{r:20,fill:'rgba(251,248,242,0.98)'});
+    iconCheck(324,1290,30,C.accent,ep);
+    text('已导出 · 120 章',380,1274,{size:24,weight:600,color:C.text,align:'left',alpha:ep,family:FN});
+    text('TXT · Markdown · 30.2 万字',380,1310,{size:20,weight:400,color:C.faint,align:'left',alpha:ep,family:FN});
+  }
+  goldDust(t,0.6);
+}
+
+/* S9 落点 */
+function S9(lt){
+  const t=lt;
+  // dark ink bg
+  ctx.fillStyle='#0E0C0A'; ctx.fillRect(0,0,W,H);
+  ctx.save(); ctx.globalAlpha=0.6; ctx.globalCompositeOperation='screen'; ctx.drawImage(asset.paperDark,0,0,W,H); ctx.restore();
+  // converging gold particles
+  const cp=seg(t,0.0,1.6);
+  if(cp<1){
+    const r=mulberry32(SEED+222);
+    for(let i=0;i<160;i++){
+      const a=r()*TAU, rr=lerp(900,120,eo3(cp))*(0.5+r()*0.5);
+      const x=540+Math.cos(a)*rr, y=760+Math.sin(a)*rr;
+      ctx.fillStyle=`rgba(232,206,134,${0.15+0.5*(1-cp)})`;
+      ctx.beginPath(); ctx.arc(x,y,1.5+r()*2.5,0,TAU); ctx.fill();
+    }
+  }
+  // icon
+  const ip=spring(seg(t,0.35,1.2),170,25);
+  if(ip>0){
+    ctx.save(); ctx.globalAlpha=Math.min(1,ip*1.5); ctx.translate(0,(1-ip)*30);
+    const s=320,x=540-s/2,y=520;
+    ctx.save(); ctx.shadowColor='rgba(201,162,39,0.35)'; ctx.shadowBlur=50;
+    roundRect(x,y,s,s,58); ctx.fillStyle=C.paper; ctx.fill(); ctx.restore();
+    ctx.save(); roundRect(x,y,s,s,58); ctx.clip(); ctx.drawImage(asset.icon,x,y,s,s); ctx.restore();
+    ctx.strokeStyle='rgba(201,162,39,0.55)'; ctx.lineWidth=2; roundRect(x,y,s,s,58); ctx.stroke();
+    ctx.restore();
+  }
+  // title
+  const tp=seg(t,1.0,1.5);
+  text('拾页',540,1030,{size:150,weight:700,color:C.paper,alpha:tp,letter:18,family:FK});
+  text('本 地 连 载 写 作',540,1115,{size:26,weight:400,color:'rgba(201,199,194,0.72)',alpha:seg(t,1.3,1.7),letter:10,family:FS});
+  // tagline
+  const gp=seg(t,1.8,2.3);
+  text('一句话，写成一本书。',540,1245,{size:72,weight:700,color:C.goldLight,alpha:gp,letter:2});
+  text('StefSun',540,1315,{size:34,weight:600,color:C.goldLight,alpha:seg(t,2.0,2.4),letter:6,family:FN});
+  text('抖音：@呃呃呃不知道叫什么',540,1362,{size:24,weight:400,color:'rgba(201,199,194,0.65)',alpha:seg(t,2.15,2.55),letter:1,family:FN});
+  // CTA
+  const bp=spring(seg(t,2.6,3.1),200,26);
+  if(bp>0){
+    ctx.save(); ctx.globalAlpha=Math.min(1,bp*1.5);
+    roundRect(290,1410,500,84,42); ctx.fillStyle='rgba(201,162,39,0.10)'; ctx.fill();
+    ctx.strokeStyle='rgba(201,162,39,0.7)'; ctx.lineWidth=1.8; ctx.stroke();
+    text('现在，写下第一句',540,1453,{size:32,weight:600,color:C.goldLight,letter:3,family:FS});
+    ctx.restore();
+  }
+  // seal stamp
+  const sp=seg(t,4.2,4.6);
+  if(sp>0){
+    const s=spring(sp,260,22);
+    seal('拾页',850,880,160,{rot:-0.12,alpha:Math.min(1,s*2)});
+    ripple(850,880,4.45,t,C.cinnabar,0.55,190);
+  }
+  // final thin gold line
+  const lp=seg(t,4.6,5.4);
+  ctx.save(); ctx.globalAlpha=lp*0.6; ctx.strokeStyle=C.gold; ctx.lineWidth=1.2;
+  ctx.beginPath(); ctx.moveTo(540-240*lp,1560); ctx.lineTo(540+240*lp,1560); ctx.stroke(); ctx.restore();
+  goldDust(t,1);
+}
+
+/* ---------------- timeline ---------------- */
+SCENES.push(
+  {id:'S1',start:0.0,end:4.8,dur:4.8,draw:S1},
+  {id:'S2',start:4.8,end:10.6,dur:5.8,draw:S2,trans:'ink',transDur:0.55,cx:180,cy:900},
+  {id:'S3',start:10.6,end:18.2,dur:7.6,draw:S3,trans:'page',transDur:0.6},
+  {id:'S4',start:18.2,end:25.8,dur:7.6,draw:S4,trans:'ink',transDur:0.55,cx:900,cy:500},
+  {id:'S5',start:25.8,end:33.2,dur:7.4,draw:S5,trans:'gold',transDur:0.55},
+  {id:'S5B',start:33.2,end:40.7,dur:7.5,draw:S5B,trans:'gold',transDur:0.5},
+  {id:'S6',start:40.7,end:47.3,dur:6.6,draw:S6,trans:'page',transDur:0.6},
+  {id:'S7',start:47.3,end:54.3,dur:7.0,draw:S7,trans:'ink',transDur:0.65,cx:540,cy:-300},
+  {id:'S8',start:54.3,end:60.9,dur:6.6,draw:S8,trans:'gold',transDur:0.55},
+  {id:'S9',start:60.9,end:67.5,dur:6.6,draw:S9,trans:'ink',transDur:0.7,cx:540,cy:960}
+);
+
+function sceneIndex(t){
+  for(let i=SCENES.length-1;i>=0;i--){ if(t>=SCENES[i].start) return i; }
+  return 0;
+}
+
+function renderAt(t){
+  t=clamp(t,0,DUR-1e-6);
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over'; ctx.fillStyle='#0E0C0A'; ctx.fillRect(0,0,W,H);
+  const i=sceneIndex(t);
+  const s=SCENES[i];
+  let inTrans=false;
+  if(i>0 && t < s.start + s.transDur){
+    inTrans=true;
+    const p=(t-s.start)/s.transDur;
+    if(p<0.5){
+      sceneDraw(i-1,t);
+      const q=p*2;
+      if(s.trans==='ink') inkCover(q,s.cx??540,s.cy??960,SEED+i*13,'#17130F',null);
+      else if(s.trans==='gold') goldTransition(q);
+      else pageCover(q);
+    } else {
+      sceneDraw(i,t);
+      const q=(p-0.5)*2;
+      if(s.trans==='ink') inkReveal(q,s.cx??540,s.cy??960,SEED+i*13,'#17130F',null);
+      else if(s.trans==='gold') goldTransition(1-q);
+      else pageReveal(q);
+    }
+  } else {
+    sceneDraw(i,t);
+  }
+  vignette();
+  grain(t);
+  // global paper grain for dark scenes
+  if(i===6||i===8){
+    ctx.save(); ctx.globalAlpha=0.18; ctx.globalCompositeOperation='overlay'; ctx.drawImage(asset.paper,0,0,W,H); ctx.restore();
+  }
+}
+
+/* ---------------- boot ---------------- */
+async function boot(){
+  asset.paper=makePaper(W,H,{seed:101,base:C.paper});
+  asset.paperDark=makePaper(W,H,{seed:102,dark:true});
+  asset.paperCard=makePaper(W,H,{seed:103,base:C.surface});
+  asset.inkFull=makeInkFull();
+  asset.grain=[makeGrain(11),makeGrain(22),makeGrain(33)];
+  asset.inkEdge=makeEdge(44);
+  buildParticles();
+  // text point samples for S1
+  asset.p1=sampleText('一句话',250,FK,900);
+  asset.p2=sampleText('一本书',250,FK,900);
+  try{ asset.icon=await loadImage('assets/icon.png'); }
+  catch(e){ asset.icon=document.createElement('canvas'); asset.icon.width=512; asset.icon.height=512; const x=asset.icon.getContext('2d'); x.fillStyle=C.paper; x.fillRect(0,0,512,512); x.fillStyle=C.ink; x.font=font(300,700,FK); x.textAlign='center'; x.textBaseline='middle'; x.fillText('拾',256,276); }
+  try{
+    // Wait for the @font-face rules to be available, then force-load the
+    // actual FontFace objects. document.fonts.load() can resolve empty if it
+    // runs before the CSS is applied, which would silently fall back.
+    await new Promise(r=>setTimeout(r,60));
+    const faces=[...document.fonts].filter(f=>/Noto(Serif|Sans)SC/.test(f.family));
+    await Promise.all(faces.map(f=>f.load().catch(()=>{})));
+    await Promise.all([
+      document.fonts.load('400 40px "NotoSerifSC"','拾页'),
+      document.fonts.load('700 100px "NotoSerifSC"','拾页'),
+      document.fonts.load('900 100px "NotoSerifSC"','拾页'),
+      document.fonts.load('400 40px "NotoSansSC"','拾页'),
+      document.fonts.load('700 100px "NotoSansSC"','拾页')
+    ]);
+    await document.fonts.ready;
+  }catch(e){}
+  const params=new URLSearchParams(location.search);
+  if(params.get('export')==='1'){
+    const t=parseFloat(params.get('t')||'0');
+    renderAt(t);
+  } else {
+    let t0=null;
+    const loop=(now)=>{
+      if(t0===null) t0=now;
+      const t=((now-t0)/1000)%DUR;
+      renderAt(t);
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+  window.__renderAt=renderAt;
+  window.__duration=DUR;
+  window.__fps=FPS;
+  window.__ready=true;
+}
+function sampleText(str,size,family,cy){
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const x=cv.getContext('2d');
+  x.fillStyle='#fff'; x.font=font(size,700,family); x.textAlign='center'; x.textBaseline='middle';
+  x.fillText(str,W/2,cy);
+  const d=x.getImageData(0,0,W,H).data, pts=[];
+  const step=4;
+  for(let y=0;y<H;y+=step) for(let xx=0;xx<W;xx+=step){
+    if(d[(y*W+xx)*4+3]>128) pts.push([xx,y]);
+  }
+  // shuffle deterministic
+  const r=mulberry32(SEED+str.length*31);
+  for(let i=pts.length-1;i>0;i--){ const j=Math.floor(r()*(i+1)); [pts[i],pts[j]]=[pts[j],pts[i]]; }
+  return pts;
+}
+boot();
+</script>
+</body>
+</html>
