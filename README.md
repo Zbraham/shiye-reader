@@ -1,5 +1,7 @@
 # 拾页
 
+[![CI](https://github.com/Zbraham/shiye-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/Zbraham/shiye-reader/actions/workflows/ci.yml)
+
 一个本地优先的长篇连载阅读器与写作台。正文、章节、人物和设定都存在本机，不经过第三方服务器；想接自己的模型时，再在设置里填 OpenAI 兼容接口即可。
 
 同一套界面、字体和写作内核同时运行在 Windows 与 Android 上。桌面端用 Electron，手机端用 Capacitor 承载同一份 React 渲染层，业务逻辑直接复用，不存在两套功能各写一遍的问题。
@@ -118,8 +120,11 @@ export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-b
 需要 Node 22+、JDK 21、Android SDK 35（build-tools 35.0.0）。
 
 ```bash
-cd android
+# 在仓库根目录安装共享渲染层依赖
 npm install
+
+cd android
+npm install            # Android 外壳依赖
 
 # 让 Gradle 找到 SDK；也可以改用 ANDROID_HOME 环境变量
 # Windows: android/android/local.properties
