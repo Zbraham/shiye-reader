@@ -484,16 +484,19 @@ export function ReadingSettingsDialog({ onClose }: { onClose: () => void }): Rea
             {themeOrder.map((name) => (
               <button
                 key={name}
-                className="theme-swatch"
-                data-theme-swatch={name}
+                className="theme-option"
+                data-active={draft.theme === name}
                 aria-pressed={draft.theme === name}
                 title={themes[name].label}
                 onClick={() => patch({ theme: name })}
               >
-                <span style={{ background: themes[name].colors.bg, color: themes[name].colors.text }}>
-                  Aa
+                <span
+                  className="theme-swatch"
+                  style={{ background: themes[name].swatchBg, color: themes[name].swatchInk }}
+                >
+                  文
                 </span>
-                <small>{themes[name].label}</small>
+                {themes[name].label}
               </button>
             ))}
           </div>

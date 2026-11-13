@@ -303,11 +303,18 @@ textarea::placeholder {
 }
 
 .chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   height: 30px;
+  max-width: 100%;
   padding: 0 12px;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
+  line-height: 1;
+  white-space: nowrap;
   color: var(--color-muted);
   background: transparent;
   transition:
@@ -2351,6 +2358,13 @@ textarea::placeholder {
   background: var(--color-accent);
   border-color: var(--color-accent);
   color: var(--color-bg);
+}
+
+/* 选择态下勾选点占据封面左上角。这里让题材行整体下移，而不是增加左内边距：
+   横向宽度不变，长题材 + 两个徽章不会被挤到换行。有封面图时勾选点本身在文档流里，
+   题材行已经在其下方，无需再让位。 */
+.book-cover:not(:has(.cover-image)):has(.cover-check) .cover-top {
+  padding-top: 16px;
 }
 
 .cover-rating {
