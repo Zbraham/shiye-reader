@@ -19,9 +19,9 @@
 
 在仓库的 `release` 目录（或 GitHub Releases）里选一个。GitHub Releases 上的文件名使用 ASCII，本地 `release` 目录保留中文名：
 
-- **Windows 安装包** `shiye-1.2.0-setup.exe`（本地：`拾页-1.2.0-安装包.exe`）：常规安装，可选安装位置，会创建桌面和开始菜单快捷方式。
-- **Windows 免安装版** `shiye-1.2.0-portable.exe`（本地：`拾页-1.2.0-免安装.exe`）：双击即用，不写注册表，适合放在 U 盘或临时使用。
-- **Android** `shiye-1.2.0-android.apk`（本地：`拾页-1.2.0-Android.apk`）：支持 Android 6.0（API 23）及以上；校验值见 `shiye-1.2.0-sha256.txt`。
+- **Windows 安装包** `shiye-1.2.1-setup.exe`（本地：`拾页-1.2.1-安装包.exe`）：常规安装，可选安装位置，会创建桌面和开始菜单快捷方式。
+- **Windows 免安装版** `shiye-1.2.1-portable.exe`（本地：`拾页-1.2.1-免安装.exe`）：双击即用，不写注册表，适合放在 U 盘或临时使用。
+- **Android** `shiye-1.2.1-android.apk`（本地：`拾页-1.2.1-Android.apk`）：支持 Android 6.0（API 23）及以上；校验值见 `shiye-1.2.1-sha256.txt`。
 
 Windows 安装包没有购买代码签名证书，首次运行可能提示“未知发布者”，选择“更多信息 → 仍要运行”即可。Android APK 使用项目自己的发布密钥签名；首次安装需要在系统里允许当前文件管理器“安装未知应用”。
 
@@ -179,7 +179,7 @@ npm run apk:release   # 生成签名 Release APK（需要 keystore.properties）
 产物位于 `android/android/app/build/outputs/apk/`。安装到已连接的设备：
 
 ```bash
-adb install -r ../release/拾页-1.2.0-Android.apk
+adb install -r ../release/拾页-1.2.1-Android.apk
 ```
 
 发布签名读取 `android/keystore.properties`（已被 `.gitignore` 排除）：
